@@ -6,6 +6,7 @@ import android.util.Log
 import io.ktor.client.*
 import io.ktor.client.engine.cio.*
 import io.ktor.client.request.*
+import io.ktor.client.statement.*
 import io.ktor.http.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -24,7 +25,7 @@ class SonosController(private val context: Context) {
         }
     }
 
-    suspend fun play(device: SonosDevice, streamUrl: String, title: String = "Live Microphone") {
+    suspend fun play(device: SonosDevice, streamUrl: String, title: String = "Live Microphone", forceRadio: Boolean = true) {
         val url = "http://${device.ipAddress}:${device.port}/MediaRenderer/AVTransport/Control"
         
         val escapedTitle = title
@@ -32,16 +33,45 @@ class SonosController(private val context: Context) {
             .replace("<", "&lt;")
             .replace(">", "&gt;")
         
-        val metadata = """<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"><item id="R:0/0/0" parentID="R:0/0" restricted="true"><dc:title>$escapedTitle</dc:title><upnp:class>object.item.audioItem.audioBroadcast</upnp:class><desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">SA_RINCON65031_</desc></item></DIDL-Lite>"""
+        // SoCo-style metadata for radio streams
+        // Note: This will be XML-escaped when embedded in SOAP body
+        val metadataRaw = """<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"><item id="R:0/0/0" parentID="R:0/0" restricted="true"><dc:title>$escapedTitle</dc:title><upnp:class>object.item.audioItem.audioBroadcast</upnp:class><desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">SA_RINCON65031_</desc></item></DIDL-Lite>"""
         
-        Log.d(TAG, "Playing URI: $streamUrl")
+        // XML-escape the metadata for embedding in SOAP body
+        val metadata = metadataRaw
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace("\"", "&quot;")
+        
+        // For AAC streams, use aac:// scheme; for MP3 streams use x-rincon-mp3radio://
+        // Check if it's an AAC stream based on file extension
+        val isAacStream = streamUrl.contains(".aac")
+        val actualUri = if (forceRadio && streamUrl.startsWith("http://")) {
+            if (isAacStream) {
+                "aac://" + streamUrl.removePrefix("http://")
+            } else {
+                "x-rincon-mp3radio://" + streamUrl.removePrefix("http://")
+            }
+        } else if (forceRadio && streamUrl.startsWith("https://")) {
+            if (isAacStream) {
+                "aac://" + streamUrl.removePrefix("https://")
+            } else {
+                "x-rincon-mp3radio://" + streamUrl.removePrefix("https://")
+            }
+        } else {
+            streamUrl
+        }
+        
+        Log.d(TAG, "Original URI: $streamUrl")
+        Log.d(TAG, "Actual URI sent to Sonos: $actualUri")
         Log.d(TAG, "Metadata: $metadata")
         
         val setAVTransportURIBody = """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
     <s:Body>
         <u:SetAVTransportURI xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
             <InstanceID>0</InstanceID>
-            <CurrentURI>$streamUrl</CurrentURI>
+            <CurrentURI>$actualUri</CurrentURI>
             <CurrentURIMetaData>$metadata</CurrentURIMetaData>
         </u:SetAVTransportURI>
     </s:Body>
@@ -49,12 +79,34 @@ class SonosController(private val context: Context) {
 
         withContext(Dispatchers.IO) {
             try {
-                Log.d(TAG, "Setting AVTransport URI to $streamUrl for device ${device.name}")
-                client.post(url) {
+                // First, stop any current playback
+                Log.d(TAG, "Stopping current playback on ${device.name}")
+                val stopBody = """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+    <s:Body>
+        <u:Stop xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
+            <InstanceID>0</InstanceID>
+        </u:Stop>
+    </s:Body>
+</s:Envelope>"""
+                try {
+                    client.post(url) {
+                        header("SOAPACTION", "\"urn:schemas-upnp-org:service:AVTransport:1#Stop\"")
+                        contentType(ContentType.Text.Xml)
+                        setBody(stopBody)
+                    }
+                } catch (e: Exception) {
+                    Log.d(TAG, "Stop failed (may be already stopped): ${e.message}")
+                }
+                
+                Log.d(TAG, "Setting AVTransport URI to $actualUri for device ${device.name}")
+                val setUriResponse = client.post(url) {
                     header("SOAPACTION", "\"urn:schemas-upnp-org:service:AVTransport:1#SetAVTransportURI\"")
                     contentType(ContentType.Text.Xml)
                     setBody(setAVTransportURIBody)
                 }
+                val setUriResponseBody = setUriResponse.bodyAsText()
+                Log.i(TAG, "SetAVTransportURI response status: ${setUriResponse.status}")
+                Log.i(TAG, "SetAVTransportURI response body: $setUriResponseBody")
 
                 val playBody = """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
     <s:Body>
@@ -72,16 +124,130 @@ class SonosController(private val context: Context) {
                     setBody(playBody)
                 }
                 Log.i(TAG, "Successfully started playback on ${device.name}")
+                
+                // Check transport state to see if Sonos reports any errors
+                kotlinx.coroutines.delay(500)
+                var transportInfo = getTransportInfo(device)
+                Log.i(TAG, "Transport state at 0.5s: $transportInfo")
+                
+                // Also check what URI is actually set
+                var mediaInfo = getMediaInfo(device)
+                Log.i(TAG, "Media URI at 0.5s: $mediaInfo")
+                
+                // Check again after more time
+                kotlinx.coroutines.delay(2000)
+                transportInfo = getTransportInfo(device)
+                Log.i(TAG, "Transport state at 2.5s: $transportInfo")
+                mediaInfo = getMediaInfo(device)
+                Log.i(TAG, "Media URI at 2.5s: $mediaInfo")
+                
+                // Check volume
+                val volumeInfo = getVolume(device)
+                Log.i(TAG, "Current volume: $volumeInfo")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start playback on ${device.name}", e)
                 throw e
             }
         }
     }
+    
+    suspend fun getVolume(device: SonosDevice): String {
+        val url = "http://${device.ipAddress}:${device.port}/MediaRenderer/RenderingControl/Control"
+        val body = """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+    <s:Body>
+        <u:GetVolume xmlns:u="urn:schemas-upnp-org:service:RenderingControl:1">
+            <InstanceID>0</InstanceID>
+            <Channel>Master</Channel>
+        </u:GetVolume>
+    </s:Body>
+</s:Envelope>"""
+
+        return withContext(Dispatchers.IO) {
+            try {
+                val response = client.post(url) {
+                    header("SOAPACTION", "\"urn:schemas-upnp-org:service:RenderingControl:1#GetVolume\"")
+                    contentType(ContentType.Text.Xml)
+                    setBody(body)
+                }
+                val responseBody = response.bodyAsText()
+                val volumeMatch = Regex("<CurrentVolume>(\\d+)</CurrentVolume>").find(responseBody)
+                volumeMatch?.groupValues?.get(1) ?: "unknown"
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to get volume", e)
+                "Error: ${e.message}"
+            }
+        }
+    }
+    
+    suspend fun getMediaInfo(device: SonosDevice): String {
+        val url = "http://${device.ipAddress}:${device.port}/MediaRenderer/AVTransport/Control"
+        val body = """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+    <s:Body>
+        <u:GetMediaInfo xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
+            <InstanceID>0</InstanceID>
+        </u:GetMediaInfo>
+    </s:Body>
+</s:Envelope>"""
+
+        return withContext(Dispatchers.IO) {
+            try {
+                val response = client.post(url) {
+                    header("SOAPACTION", "\"urn:schemas-upnp-org:service:AVTransport:1#GetMediaInfo\"")
+                    contentType(ContentType.Text.Xml)
+                    setBody(body)
+                }
+                val responseBody = response.bodyAsText()
+                // Extract just the CurrentURI for cleaner logging
+                val uriMatch = Regex("<CurrentURI>(.*?)</CurrentURI>").find(responseBody)
+                val uri = uriMatch?.groupValues?.get(1) ?: "not found"
+                Log.d(TAG, "GetMediaInfo CurrentURI: $uri")
+                uri
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to get media info", e)
+                "Error: ${e.message}"
+            }
+        }
+    }
+    
+    suspend fun getTransportInfo(device: SonosDevice): String {
+        val url = "http://${device.ipAddress}:${device.port}/MediaRenderer/AVTransport/Control"
+        val body = """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+    <s:Body>
+        <u:GetTransportInfo xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
+            <InstanceID>0</InstanceID>
+        </u:GetTransportInfo>
+    </s:Body>
+</s:Envelope>"""
+
+        return withContext(Dispatchers.IO) {
+            try {
+                val response = client.post(url) {
+                    header("SOAPACTION", "\"urn:schemas-upnp-org:service:AVTransport:1#GetTransportInfo\"")
+                    contentType(ContentType.Text.Xml)
+                    setBody(body)
+                }
+                val responseBody = response.bodyAsText()
+                Log.d(TAG, "GetTransportInfo response: $responseBody")
+                responseBody
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to get transport info", e)
+                "Error: ${e.message}"
+            }
+        }
+    }
 
     suspend fun playTestAudio(device: SonosDevice) {
+        // HTTPS URLs work directly without forceRadio
         val testUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
-        play(device, testUrl)
+        play(device, testUrl, "Test Audio", forceRadio = false)
+    }
+    
+    suspend fun playLocalTest(device: SonosDevice, localIp: String) {
+        // Use WAV stream endpoint - uncompressed PCM should work universally
+        val testUrl = "http://$localIp:8080/stream.wav"
+        Log.i(TAG, "Testing with local WAV URL: $testUrl")
+        // WAV files work with plain HTTP
+        play(device, testUrl, "Live Microphone", forceRadio = false)
     }
 
     suspend fun stop(device: SonosDevice) {

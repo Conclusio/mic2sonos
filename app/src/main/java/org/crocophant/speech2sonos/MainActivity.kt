@@ -207,6 +207,42 @@ class SonosViewModel(private val audioStreamer: AudioStreamer, private val sonos
         }
     }
 
+    fun testLocalServer() {
+        if (_selectedDevices.value.isEmpty()) {
+            _errorMessage.value = "Please select at least one device"
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                // Start the server first
+                val started = audioStreamer.start()
+                if (!started) {
+                    _errorMessage.value = "Failed to start server"
+                    return@launch
+                }
+                
+                val ipAddress = sonosController.getDeviceIpAddress()
+                if (ipAddress == null) {
+                    _errorMessage.value = "Could not determine device IP address"
+                    audioStreamer.stop()
+                    return@launch
+                }
+                
+                android.util.Log.i("SonosViewModel", "Testing local server at http://$ipAddress:8080/test.mp3")
+                _selectedDevices.value.forEach { device ->
+                    try {
+                        sonosController.playLocalTest(device, ipAddress)
+                    } catch (e: Exception) {
+                        _errorMessage.value = "Failed on ${device.name}: ${e.message}"
+                    }
+                }
+            } catch (e: Exception) {
+                _errorMessage.value = "Test error: ${e.message}"
+            }
+        }
+    }
+
     private suspend fun startTestPlayback() {
         _isTesting.value = true
         _selectedDevices.value.forEach { device ->
@@ -336,6 +372,7 @@ fun SonosScreen(
                 isTesting = isTesting,
                 onToggleRecording = { viewModel.toggleRecording() },
                 onToggleTest = { viewModel.toggleTestPlayback() },
+                onTestLocalServer = { viewModel.testLocalServer() },
                 enabled = viewModel.permissionGranted,
                 modifier = Modifier.padding(bottom = 24.dp)
             )
@@ -431,6 +468,7 @@ fun BottomControls(
     isTesting: Boolean,
     onToggleRecording: () -> Unit,
     onToggleTest: () -> Unit,
+    onTestLocalServer: () -> Unit,
     enabled: Boolean,
     modifier: Modifier = Modifier
 ) {
@@ -439,11 +477,22 @@ fun BottomControls(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        OutlinedButton(
-            onClick = onToggleTest,
-            enabled = enabled && !isRecording
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text(if (isTesting) "Stop Test" else "Test Audio")
+            OutlinedButton(
+                onClick = onToggleTest,
+                enabled = enabled && !isRecording
+            ) {
+                Text(if (isTesting) "Stop Test" else "Test Audio")
+            }
+            
+            OutlinedButton(
+                onClick = onTestLocalServer,
+                enabled = enabled && !isRecording
+            ) {
+                Text("Test Local")
+            }
         }
 
         FloatingActionButton(

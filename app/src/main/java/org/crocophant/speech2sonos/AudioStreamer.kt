@@ -52,6 +52,10 @@ class AudioStreamer {
 
     private val _audioDataFlow = MutableSharedFlow<ByteArray>(replay = 0, extraBufferCapacity = 64)
     private val audioDataFlow = _audioDataFlow.asSharedFlow()
+    
+    // Raw PCM data flow for WAV streaming
+    private val _rawPcmFlow = MutableSharedFlow<ByteArray>(replay = 0, extraBufferCapacity = 64)
+    private val rawPcmFlow = _rawPcmFlow.asSharedFlow()
 
     private val _amplitudeFlow = MutableStateFlow(0f)
     val amplitudeFlow: StateFlow<Float> = _amplitudeFlow.asStateFlow()
@@ -148,24 +152,132 @@ class AudioStreamer {
                     call.response.header("icy-name", "Live Microphone")
                     call.respond(io.ktor.http.HttpStatusCode.OK)
                 }
-                get("/stream.aac") {
-                    Log.i(TAG, "=== STREAM REQUEST RECEIVED ===")
+                // WAV stream endpoint - uncompressed PCM, should be universally compatible
+                get("/stream.wav") {
+                    Log.i(TAG, "=== STREAM WAV REQUEST RECEIVED ===")
                     Log.i(TAG, "Client: ${call.request.local.remoteHost}")
                     Log.i(TAG, "User-Agent: ${call.request.headers["User-Agent"]}")
+                    
                     call.response.header("Cache-Control", "no-cache, no-store")
                     call.response.header("Pragma", "no-cache")
                     call.response.header("Accept-Ranges", "none")
                     call.response.header("icy-name", "Live Microphone")
-                    call.respondOutputStream(ContentType("audio", "aac")) {
-                        Log.i(TAG, "Starting to stream audio data...")
+                    
+                    // Stream raw PCM as WAV (no header needed for streaming, or with a fake header)
+                    call.respondOutputStream(ContentType("audio", "wav")) {
+                        Log.i(TAG, "Starting to stream WAV audio data...")
+                        
+                        // Write a minimal WAV header for streaming (unknown length)
+                        // RIFF header
+                        write("RIFF".toByteArray())
+                        write(byteArrayOf(0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0x7F.toByte())) // Max file size
+                        write("WAVE".toByteArray())
+                        
+                        // fmt chunk
+                        write("fmt ".toByteArray())
+                        write(byteArrayOf(16, 0, 0, 0)) // Chunk size = 16
+                        write(byteArrayOf(1, 0)) // Audio format = 1 (PCM)
+                        write(byteArrayOf(1, 0)) // Num channels = 1 (mono)
+                        write(byteArrayOf(0x44, 0xAC.toByte(), 0, 0)) // Sample rate = 44100
+                        write(byteArrayOf(0x88.toByte(), 0x58, 0x01, 0)) // Byte rate = 88200
+                        write(byteArrayOf(2, 0)) // Block align = 2
+                        write(byteArrayOf(16, 0)) // Bits per sample = 16
+                        
+                        // data chunk
+                        write("data".toByteArray())
+                        write(byteArrayOf(0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0x7F.toByte())) // Max data size
+                        
+                        flush()
+                        Log.i(TAG, "WAV header written, now streaming PCM data...")
+                        
                         try {
                             var chunkCount = 0
+                            var totalBytes = 0L
+                            // For WAV, we need raw PCM data, not encoded AAC
+                            // We'll need to add a separate flow for raw PCM
+                            rawPcmFlow.collect { pcmChunk ->
+                                write(pcmChunk)
+                                flush()
+                                chunkCount++
+                                totalBytes += pcmChunk.size
+                                if (chunkCount % 50 == 0) {
+                                    Log.d(TAG, "Streamed WAV $chunkCount chunks, $totalBytes bytes total")
+                                }
+                            }
+                        } catch (e: IOException) {
+                            Log.d(TAG, "WAV client disconnected")
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Error streaming WAV", e)
+                        }
+                    }
+                }
+                head("/test.mp3") {
+                    Log.i(TAG, "=== TEST MP3 HEAD REQUEST ===")
+                    Log.i(TAG, "Client: ${call.request.local.remoteHost}")
+                    call.response.header("Content-Type", "audio/mpeg")
+                    call.response.header("Accept-Ranges", "none")
+                    call.response.header("Cache-Control", "no-cache")
+                    call.respond(io.ktor.http.HttpStatusCode.OK)
+                }
+                get("/test.mp3") {
+                    Log.i(TAG, "=== TEST MP3 GET REQUEST RECEIVED ===")
+                    Log.i(TAG, "Client: ${call.request.local.remoteHost}")
+                    Log.i(TAG, "User-Agent: ${call.request.headers["User-Agent"]}")
+                    Log.i(TAG, "All headers: ${call.request.headers.entries()}")
+                    
+                    // Generate a simple sine wave tone as MP3-like data
+                    // For now, just stream the AAC data we're already generating
+                    call.response.header("Cache-Control", "no-cache, no-store")
+                    call.response.header("Pragma", "no-cache")
+                    call.response.header("Accept-Ranges", "none")
+                    call.response.header("icy-name", "Test Stream")
+                    call.respondOutputStream(ContentType.Audio.MPEG) {
+                        Log.i(TAG, "Starting test.mp3 stream...")
+                        try {
+                            audioDataFlow.collect { audioChunk ->
+                                write(audioChunk)
+                                flush()
+                            }
+                        } catch (e: IOException) {
+                            Log.d(TAG, "Test stream client disconnected")
+                        }
+                    }
+                }
+                get("/stream.aac") {
+                    Log.i(TAG, "=== STREAM AAC REQUEST RECEIVED ===")
+                    Log.i(TAG, "Client: ${call.request.local.remoteHost}")
+                    Log.i(TAG, "User-Agent: ${call.request.headers["User-Agent"]}")
+                    Log.i(TAG, "Request headers: ${call.request.headers.entries().map { "${it.key}: ${it.value}" }}")
+                    
+                    // Check if client wants ICY metadata
+                    val wantsIcyMetadata = call.request.headers["Icy-MetaData"] == "1"
+                    Log.i(TAG, "Client wants ICY metadata: $wantsIcyMetadata")
+                    
+                    call.response.header("Cache-Control", "no-cache, no-store")
+                    call.response.header("Pragma", "no-cache")
+                    call.response.header("Accept-Ranges", "none")
+                    call.response.header("icy-name", "Live Microphone")
+                    call.response.header("icy-br", "128")
+                    
+                    // ICY metadata interval - set to 0 to disable inline metadata
+                    // or set to a byte count like 16000 to include metadata
+                    if (wantsIcyMetadata) {
+                        call.response.header("icy-metaint", "0")
+                    }
+                    
+                    // Use audio/aac content type
+                    call.respondOutputStream(ContentType("audio", "aac")) {
+                        Log.i(TAG, "Starting to stream AAC audio data...")
+                        try {
+                            var chunkCount = 0
+                            var totalBytes = 0L
                             audioDataFlow.collect { audioChunk ->
                                 write(audioChunk)
                                 flush()
                                 chunkCount++
-                                if (chunkCount % 100 == 0) {
-                                    Log.d(TAG, "Streamed $chunkCount chunks")
+                                totalBytes += audioChunk.size
+                                if (chunkCount % 50 == 0) {
+                                    Log.d(TAG, "Streamed $chunkCount chunks, $totalBytes bytes total")
                                 }
                             }
                         } catch (e: IOException) {
@@ -212,6 +324,24 @@ class AudioStreamer {
                         waveformHistory.removeFirst()
                     }
                     _waveformData.value = waveformHistory.toList()
+                    
+                    // Emit raw PCM for WAV streaming
+                    // Debug: check if audio data is valid (not all zeros)
+                    var maxSample = 0
+                    for (i in 0 until bytesRead / 2) {
+                        val sample = (pcmBuffer[i * 2].toInt() and 0xFF) or (pcmBuffer[i * 2 + 1].toInt() shl 8)
+                        val signedSample = sample.toShort().toInt()
+                        if (kotlin.math.abs(signedSample) > maxSample) {
+                            maxSample = kotlin.math.abs(signedSample)
+                        }
+                    }
+                    if (maxSample > 100) {
+                        // Only log occasionally to avoid spam
+                        if (System.currentTimeMillis() % 2000 < 50) {
+                            Log.d(TAG, "PCM data max sample: $maxSample (should be > 0 if mic is capturing)")
+                        }
+                    }
+                    _rawPcmFlow.tryEmit(pcmBuffer.copyOf(bytesRead))
 
                     val inputBufferIndex = codec.dequeueInputBuffer(10000)
                     if (inputBufferIndex >= 0) {
@@ -276,17 +406,33 @@ class AudioStreamer {
     private fun createAdtsHeader(length: Int): ByteArray {
         val frameLength = length + 7
         val adtsHeader = ByteArray(7)
-        val profile = 2  // AAC LC
+        val profile = 2  // AAC LC (will be stored as profile-1 = 1)
         val freqIdx = 4  // 44.1KHz
         val chanCfg = 1  // Mono
 
+        // Byte 0: 0xFF - sync word (all 1s)
         adtsHeader[0] = 0xFF.toByte()
-        adtsHeader[1] = 0xF9.toByte()
+        
+        // Byte 1: 0xF1 for MPEG-4 AAC (ID=0), or 0xF9 for MPEG-2 AAC (ID=1)
+        // Format: 1111 IBPP where I=ID, B=layer(00), P=protection_absent
+        // Using 0xF1 = 11110001 = MPEG-4, layer 00, protection_absent=1
+        adtsHeader[1] = 0xF1.toByte()
+        
+        // Byte 2: PPFF FFFC where PP=profile-1, FFFF=freq_idx, C=channel_config high bit
         adtsHeader[2] = (((profile - 1) shl 6) + (freqIdx shl 2) + (chanCfg shr 2)).toByte()
+        
+        // Byte 3: CCOO OOOO where CC=channel_config low 2 bits, O=originality, home, etc + frame length high 2 bits
         adtsHeader[3] = (((chanCfg and 3) shl 6) + (frameLength shr 11)).toByte()
+        
+        // Byte 4: frame length middle 8 bits
         adtsHeader[4] = ((frameLength and 0x7FF) shr 3).toByte()
+        
+        // Byte 5: frame length low 3 bits + buffer fullness high 5 bits
         adtsHeader[5] = (((frameLength and 7) shl 5) + 0x1F).toByte()
+        
+        // Byte 6: buffer fullness low 6 bits + number of frames - 1
         adtsHeader[6] = 0xFC.toByte()
+        
         return adtsHeader
     }
 
