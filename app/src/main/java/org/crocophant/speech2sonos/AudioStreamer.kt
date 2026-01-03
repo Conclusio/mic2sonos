@@ -153,8 +153,13 @@ class AudioStreamer {
                 exception<IOException> { _, cause ->
                     Log.d(TAG, "I/O error during streaming: ${cause.message}")
                 }
+                exception<kotlinx.coroutines.CancellationException> { _, _ ->
+                    // Normal shutdown, ignore
+                }
                 exception<Throwable> { _, cause ->
-                    Log.e(TAG, "Unexpected error in server", cause)
+                    if (isRunning.get()) {
+                        Log.e(TAG, "Unexpected error in server", cause)
+                    }
                 }
             }
             routing {
@@ -349,6 +354,8 @@ class AudioStreamer {
                             }
                         } catch (e: IOException) {
                             Log.d(TAG, "WAV client disconnected: ${e.message}")
+                        } catch (e: kotlinx.coroutines.CancellationException) {
+                            Log.d(TAG, "WAV streaming cancelled")
                         } catch (e: Exception) {
                             Log.e(TAG, "Error streaming WAV", e)
                         }
@@ -561,8 +568,12 @@ class AudioStreamer {
         serverJob = scope.launch {
             try {
                 server?.start(wait = true)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                Log.d(TAG, "Server stopped")
             } catch (e: Exception) {
-                Log.e(TAG, "Server error", e)
+                if (isRunning.get()) {
+                    Log.e(TAG, "Server error", e)
+                }
             }
         }
     }
@@ -644,10 +655,16 @@ class AudioStreamer {
                         outputBufferIndex = codec.dequeueOutputBuffer(bufferInfo, 0)
                     }
                 } catch (e: IllegalStateException) {
-                    Log.e(TAG, "Codec in illegal state", e)
+                    if (isRunning.get()) {
+                        Log.e(TAG, "Codec in illegal state", e)
+                    }
+                    break
+                } catch (e: kotlinx.coroutines.CancellationException) {
                     break
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error in recording loop", e)
+                    if (isRunning.get()) {
+                        Log.e(TAG, "Error in recording loop", e)
+                    }
                     delay(10)
                 }
             }
