@@ -72,6 +72,14 @@ class AudioStreamer {
 
     private val _waveformData = MutableStateFlow<List<Float>>(emptyList())
     val waveformData: StateFlow<List<Float>> = _waveformData.asStateFlow()
+    
+    // Configurable amplification (1-20x range)
+    private val _amplificationFactor = MutableStateFlow(10)
+    val amplificationFactor: StateFlow<Int> = _amplificationFactor.asStateFlow()
+    
+    fun setAmplification(factor: Int) {
+        _amplificationFactor.value = factor.coerceIn(1, 20)
+    }
 
     private val sampleRate = 44100
     private val channelConfig = AudioFormat.CHANNEL_IN_MONO
@@ -273,12 +281,12 @@ class AudioStreamer {
                 get("/stream.wav") {
                     Log.i(TAG, "=== STREAM WAV REQUEST RECEIVED ===")
                     Log.i(TAG, "Client: ${call.request.local.remoteHost}")
-                    Log.i(TAG, "User-Agent: ${call.request.headers["User-Agent"]}")
                     
-                    // Fake file size: 10 minutes of 44.1kHz 16-bit mono = 52,920,000 bytes of PCM data
-                    val fakeDataSize = 44100 * 2 * 60 * 10
-                    val fakeFileSize = 36 + fakeDataSize  // RIFF chunk size (excludes first 8 bytes)
-                    val totalHttpSize = 44 + fakeDataSize // Full WAV file size
+                    // Max WAV size: ~3 hours (limited by 32-bit integer, we use ~2GB to be safe)
+                    // 44100 Hz * 2 bytes * 60 sec * 180 min = 952,560,000 bytes (~3 hours)
+                    val fakeDataSize = 44100 * 2 * 60 * 180
+                    val fakeFileSize = 36 + fakeDataSize
+                    val totalHttpSize = 44 + fakeDataSize
                     
                     call.response.header("Content-Length", totalHttpSize.toString())
                     call.response.header("Cache-Control", "no-cache, no-store")
@@ -322,12 +330,12 @@ class AudioStreamer {
                             var chunkCount = 0
                             var totalBytes = 0L
                             rawPcmFlow.collect { pcmChunk ->
-                                // Amplify audio 10x (same as working mic.wav test)
+                                val gain = _amplificationFactor.value
                                 val amplified = ByteArray(pcmChunk.size)
                                 for (i in 0 until pcmChunk.size / 2) {
                                     val sample = (pcmChunk[i * 2].toInt() and 0xFF) or (pcmChunk[i * 2 + 1].toInt() shl 8)
                                     val signed = sample.toShort().toInt()
-                                    val amp = (signed * 10).coerceIn(-32768, 32767).toShort()
+                                    val amp = (signed * gain).coerceIn(-32768, 32767).toShort()
                                     amplified[i * 2] = (amp.toInt() and 0xFF).toByte()
                                     amplified[i * 2 + 1] = (amp.toInt() shr 8).toByte()
                                 }
@@ -335,8 +343,8 @@ class AudioStreamer {
                                 flush()
                                 chunkCount++
                                 totalBytes += amplified.size
-                                if (chunkCount % 50 == 0) {
-                                    Log.d(TAG, "Streamed WAV $chunkCount chunks, $totalBytes bytes")
+                                if (chunkCount % 100 == 0) {
+                                    Log.d(TAG, "Streamed $chunkCount chunks, ${totalBytes/1024}KB, gain=$gain")
                                 }
                             }
                         } catch (e: IOException) {

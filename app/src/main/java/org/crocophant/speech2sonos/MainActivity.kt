@@ -25,20 +25,30 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -65,6 +75,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var sonosDiscovery: SonosDiscovery
     private lateinit var audioStreamer: AudioStreamer
     private lateinit var sonosController: SonosController
+    private lateinit var appSettings: AppSettings
 
     private val requestPermissionLauncher =
         registerForActivityResult(
@@ -76,7 +87,7 @@ class MainActivity : ComponentActivity() {
         }
 
     private val viewModel: SonosViewModel by lazy {
-        ViewModelProvider(this, SonosViewModelFactory(audioStreamer, sonosController))[SonosViewModel::class.java]
+        ViewModelProvider(this, SonosViewModelFactory(audioStreamer, sonosController, appSettings))[SonosViewModel::class.java]
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -84,6 +95,7 @@ class MainActivity : ComponentActivity() {
         sonosDiscovery = SonosDiscovery(this)
         audioStreamer = AudioStreamer()
         sonosController = SonosController(this)
+        appSettings = AppSettings(this)
 
         when (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)) {
             PackageManager.PERMISSION_GRANTED -> {
@@ -118,17 +130,25 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-class SonosViewModelFactory(private val audioStreamer: AudioStreamer, private val sonosController: SonosController) : ViewModelProvider.Factory {
+class SonosViewModelFactory(
+    private val audioStreamer: AudioStreamer,
+    private val sonosController: SonosController,
+    private val appSettings: AppSettings
+) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(SonosViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")
-            return SonosViewModel(audioStreamer, sonosController) as T
+            return SonosViewModel(audioStreamer, sonosController, appSettings) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }
 }
 
-class SonosViewModel(private val audioStreamer: AudioStreamer, private val sonosController: SonosController) : ViewModel() {
+class SonosViewModel(
+    private val audioStreamer: AudioStreamer,
+    private val sonosController: SonosController,
+    private val appSettings: AppSettings
+) : ViewModel() {
     private val _selectedDevices = MutableStateFlow<Set<SonosDevice>>(emptySet())
     val selectedDevices: StateFlow<Set<SonosDevice>> = _selectedDevices.asStateFlow()
 
@@ -139,6 +159,9 @@ class SonosViewModel(private val audioStreamer: AudioStreamer, private val sonos
     val isTesting: StateFlow<Boolean> = _isTesting.asStateFlow()
 
     val waveformData: StateFlow<List<Float>> = audioStreamer.waveformData
+    
+    val amplification: StateFlow<Int> = appSettings.amplification
+    val showTestButton: StateFlow<Boolean> = appSettings.showTestButton
 
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
@@ -148,6 +171,20 @@ class SonosViewModel(private val audioStreamer: AudioStreamer, private val sonos
 
     fun onPermissionGranted() {
         permissionGranted = true
+    }
+    
+    fun setAmplification(value: Int) {
+        appSettings.setAmplification(value)
+        audioStreamer.setAmplification(value)
+    }
+    
+    fun setShowTestButton(show: Boolean) {
+        appSettings.setShowTestButton(show)
+    }
+    
+    init {
+        // Sync initial amplification to AudioStreamer
+        audioStreamer.setAmplification(appSettings.amplification.value)
     }
 
     fun toggleDeviceSelection(device: SonosDevice) {
@@ -393,6 +430,7 @@ class SonosViewModel(private val audioStreamer: AudioStreamer, private val sonos
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SonosScreen(
     modifier: Modifier = Modifier,
@@ -405,12 +443,31 @@ fun SonosScreen(
     val isTesting by viewModel.isTesting.collectAsState()
     val waveformData by viewModel.waveformData.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
+    val amplification by viewModel.amplification.collectAsState()
+    val showTestButton by viewModel.showTestButton.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+    var showSettings by remember { mutableStateOf(false) }
+    var showGainSlider by remember { mutableStateOf(false) }
+    val sheetState = rememberModalBottomSheetState()
 
     LaunchedEffect(errorMessage) {
         errorMessage?.let {
             snackbarHostState.showSnackbar(it)
             viewModel.clearError()
+        }
+    }
+
+    if (showSettings) {
+        ModalBottomSheet(
+            onDismissRequest = { showSettings = false },
+            sheetState = sheetState
+        ) {
+            SettingsContent(
+                amplification = amplification,
+                showTestButton = showTestButton,
+                onAmplificationChange = { viewModel.setAmplification(it) },
+                onShowTestButtonChange = { viewModel.setShowTestButton(it) }
+            )
         }
     }
 
@@ -423,35 +480,73 @@ fun SonosScreen(
                 .padding(innerPadding)
                 .fillMaxSize()
         ) {
-            if (devices.isEmpty()) {
-                Text(
-                    text = "Searching for Sonos devices...",
-                    modifier = Modifier.padding(16.dp),
-                    style = MaterialTheme.typography.bodyMedium
-                )
+            // Header with settings button
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (devices.isEmpty()) {
+                    Text(
+                        text = "Searching for Sonos devices...",
+                        modifier = Modifier.padding(8.dp),
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                } else {
+                    Text(
+                        text = "${devices.size} device${if (devices.size != 1) "s" else ""} found",
+                        modifier = Modifier.padding(8.dp),
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+                IconButton(onClick = { showSettings = true }) {
+                    Icon(Icons.Default.Settings, contentDescription = "Settings")
+                }
             }
 
             DeviceList(
                 devices = devices,
                 selectedDevices = selectedDevices,
                 onDeviceSelectionChanged = { device -> viewModel.toggleDeviceSelection(device) },
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(0.6f)
             )
 
-            AudioWaveformVisualizer(
-                waveformData = waveformData,
-                isRecording = isRecording,
+            // Waveform with tap-to-show gain slider
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(0.4f)
+                    .weight(0.6f)
                     .padding(horizontal = 16.dp)
-            )
+                    .clickable { showGainSlider = !showGainSlider }
+            ) {
+                AudioWaveformVisualizer(
+                    waveformData = waveformData,
+                    isRecording = isRecording,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+            
+            // Gain slider (hidden by default, shown on waveform tap)
+            AnimatedVisibility(
+                visible = showGainSlider,
+                enter = expandVertically(),
+                exit = shrinkVertically()
+            ) {
+                GainSlider(
+                    value = amplification,
+                    onValueChange = { viewModel.setAmplification(it) },
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
+                )
+            }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(8.dp))
 
             BottomControls(
                 isRecording = isRecording,
                 isTesting = isTesting,
+                showTestButton = showTestButton,
                 onToggleRecording = { viewModel.toggleRecording() },
                 onToggleTest = { viewModel.toggleTestPlayback() },
                 enabled = viewModel.permissionGranted,
@@ -544,9 +639,94 @@ fun AudioWaveformVisualizer(
 }
 
 @Composable
+fun GainSlider(
+    value: Int,
+    onValueChange: (Int) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Column(modifier = modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text("Gain", style = MaterialTheme.typography.labelMedium)
+            Text("${value}x", style = MaterialTheme.typography.labelMedium)
+        }
+        Slider(
+            value = value.toFloat(),
+            onValueChange = { onValueChange(it.toInt()) },
+            valueRange = 1f..20f,
+            steps = 18,
+            modifier = Modifier.fillMaxWidth()
+        )
+    }
+}
+
+@Composable
+fun SettingsContent(
+    amplification: Int,
+    showTestButton: Boolean,
+    onAmplificationChange: (Int) -> Unit,
+    onShowTestButtonChange: (Boolean) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(24.dp)
+    ) {
+        Text("Settings", style = MaterialTheme.typography.headlineSmall)
+        
+        Column {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("Microphone Gain", style = MaterialTheme.typography.bodyLarge)
+                Text("${amplification}x", style = MaterialTheme.typography.bodyLarge)
+            }
+            Slider(
+                value = amplification.toFloat(),
+                onValueChange = { onAmplificationChange(it.toInt()) },
+                valueRange = 1f..20f,
+                steps = 18,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text(
+                "Increase if audio is too quiet, decrease if distorted",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column {
+                Text("Show Test Button", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    "Test with internet audio",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = showTestButton,
+                onCheckedChange = onShowTestButtonChange
+            )
+        }
+        
+        Spacer(modifier = Modifier.height(24.dp))
+    }
+}
+
+@Composable
 fun BottomControls(
     isRecording: Boolean,
     isTesting: Boolean,
+    showTestButton: Boolean,
     onToggleRecording: () -> Unit,
     onToggleTest: () -> Unit,
     enabled: Boolean,
@@ -557,11 +737,13 @@ fun BottomControls(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        OutlinedButton(
-            onClick = onToggleTest,
-            enabled = enabled && !isRecording
-        ) {
-            Text(if (isTesting) "Stop Test" else "Test Internet Audio")
+        AnimatedVisibility(visible = showTestButton) {
+            OutlinedButton(
+                onClick = onToggleTest,
+                enabled = enabled && !isRecording
+            ) {
+                Text(if (isTesting) "Stop Test" else "Test Internet Audio")
+            }
         }
 
         FloatingActionButton(
