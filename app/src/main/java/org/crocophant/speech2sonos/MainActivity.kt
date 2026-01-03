@@ -215,7 +215,6 @@ class SonosViewModel(private val audioStreamer: AudioStreamer, private val sonos
 
         viewModelScope.launch {
             try {
-                // Start the server first
                 val started = audioStreamer.start()
                 if (!started) {
                     _errorMessage.value = "Failed to start server"
@@ -229,7 +228,8 @@ class SonosViewModel(private val audioStreamer: AudioStreamer, private val sonos
                     return@launch
                 }
                 
-                android.util.Log.i("SonosViewModel", "Testing local server at http://$ipAddress:8080/test.mp3")
+                _isRecording.value = true  // Enable visualization
+                
                 _selectedDevices.value.forEach { device ->
                     try {
                         sonosController.playLocalTest(device, ipAddress)
@@ -239,6 +239,7 @@ class SonosViewModel(private val audioStreamer: AudioStreamer, private val sonos
                 }
             } catch (e: Exception) {
                 _errorMessage.value = "Test error: ${e.message}"
+                _isRecording.value = false
             }
         }
     }
@@ -364,14 +365,12 @@ class SonosViewModel(private val audioStreamer: AudioStreamer, private val sonos
 
         _isRecording.value = true
 
-        val streamUrl = "http://$ipAddress:8080/stream.aac"
-        android.util.Log.i("SonosViewModel", "Starting stream with URL: $streamUrl")
+        // Use WAV streaming with amplification (this works!)
+        val streamUrl = "http://$ipAddress:8080/stream.wav"
         _selectedDevices.value.forEach { device ->
             try {
-                android.util.Log.i("SonosViewModel", "Sending play command to ${device.name} (${device.ipAddress}:${device.port})")
-                sonosController.play(device, streamUrl)
+                sonosController.play(device, streamUrl, "Live Microphone", forceRadio = false)
             } catch (e: Exception) {
-                android.util.Log.e("SonosViewModel", "Failed to play on ${device.name}", e)
                 _errorMessage.value = "Failed to start playback on ${device.name}: ${e.message}"
             }
         }
@@ -455,9 +454,6 @@ fun SonosScreen(
                 isTesting = isTesting,
                 onToggleRecording = { viewModel.toggleRecording() },
                 onToggleTest = { viewModel.toggleTestPlayback() },
-                onTestLocalServer = { viewModel.testLocalServer() },
-                onTestStaticWav = { viewModel.testStaticWav() },
-                onStartHls = { viewModel.startHlsStream() },
                 enabled = viewModel.permissionGranted,
                 modifier = Modifier.padding(bottom = 24.dp)
             )
@@ -553,51 +549,19 @@ fun BottomControls(
     isTesting: Boolean,
     onToggleRecording: () -> Unit,
     onToggleTest: () -> Unit,
-    onTestLocalServer: () -> Unit,
-    onTestStaticWav: () -> Unit,
-    onStartHls: () -> Unit,
     enabled: Boolean,
     modifier: Modifier = Modifier
 ) {
     Column(
         modifier = modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        OutlinedButton(
+            onClick = onToggleTest,
+            enabled = enabled && !isRecording
         ) {
-            OutlinedButton(
-                onClick = onToggleTest,
-                enabled = enabled && !isRecording
-            ) {
-                Text(if (isTesting) "Stop Test" else "Test Audio")
-            }
-            
-            OutlinedButton(
-                onClick = onTestStaticWav,
-                enabled = enabled && !isRecording
-            ) {
-                Text("Static WAV")
-            }
-        }
-        
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            OutlinedButton(
-                onClick = onTestLocalServer,
-                enabled = enabled && !isRecording
-            ) {
-                Text("Test Local")
-            }
-            
-            OutlinedButton(
-                onClick = onStartHls,
-                enabled = enabled && !isRecording
-            ) {
-                Text("HLS Stream")
-            }
+            Text(if (isTesting) "Stop Test" else "Test Internet Audio")
         }
 
         FloatingActionButton(
@@ -609,7 +573,7 @@ fun BottomControls(
         ) {
             Icon(
                 imageVector = if (isRecording) Icons.Default.Stop else Icons.Default.Mic,
-                contentDescription = if (isRecording) "Stop recording" else "Start recording",
+                contentDescription = if (isRecording) "Stop streaming" else "Start streaming",
                 modifier = Modifier.size(32.dp)
             )
         }

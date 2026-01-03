@@ -93,7 +93,7 @@ class AudioStreamer {
                 return@withContext false
             }
 
-            val actualBufferSize = bufferSize * 4
+            val actualBufferSize = bufferSize * 2  // Reduced for lower latency
 
             val mediaFormat = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, 1).apply {
                 setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
@@ -119,7 +119,7 @@ class AudioStreamer {
             }
 
             startServer()
-            delay(500)
+            delay(200)  // Reduced startup delay
 
             audioRecord?.startRecording()
             mediaCodec?.start()
@@ -322,10 +322,19 @@ class AudioStreamer {
                             var chunkCount = 0
                             var totalBytes = 0L
                             rawPcmFlow.collect { pcmChunk ->
-                                write(pcmChunk)
+                                // Amplify audio 10x (same as working mic.wav test)
+                                val amplified = ByteArray(pcmChunk.size)
+                                for (i in 0 until pcmChunk.size / 2) {
+                                    val sample = (pcmChunk[i * 2].toInt() and 0xFF) or (pcmChunk[i * 2 + 1].toInt() shl 8)
+                                    val signed = sample.toShort().toInt()
+                                    val amp = (signed * 10).coerceIn(-32768, 32767).toShort()
+                                    amplified[i * 2] = (amp.toInt() and 0xFF).toByte()
+                                    amplified[i * 2 + 1] = (amp.toInt() shr 8).toByte()
+                                }
+                                write(amplified)
                                 flush()
                                 chunkCount++
-                                totalBytes += pcmChunk.size
+                                totalBytes += amplified.size
                                 if (chunkCount % 50 == 0) {
                                     Log.d(TAG, "Streamed WAV $chunkCount chunks, $totalBytes bytes")
                                 }

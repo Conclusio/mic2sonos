@@ -243,10 +243,10 @@ class SonosController(private val context: Context) {
     }
     
     suspend fun playLocalTest(device: SonosDevice, localIp: String) {
-        // Test tone using buildWavFile function - isolates if buildWavFile is correct
-        val testUrl = "http://$localIp:8080/tone.wav"
-        Log.i(TAG, "Testing with tone WAV (buildWavFile): $testUrl")
-        play(device, testUrl, "Test Tone", forceRadio = false)
+        // Real-time streaming with amplification
+        val testUrl = "http://$localIp:8080/stream.wav"
+        Log.i(TAG, "Starting real-time stream: $testUrl")
+        play(device, testUrl, "Live Microphone", forceRadio = false)
     }
     
     suspend fun playStaticTest(device: SonosDevice, localIp: String) {
