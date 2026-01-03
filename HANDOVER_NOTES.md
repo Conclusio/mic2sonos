@@ -33,6 +33,7 @@
 - `http://<phone-ip>:8080/stream.wav` - WAV stream (PCM 16-bit, 44.1kHz, mono)
 - `http://<phone-ip>:8080/stream.aac` - AAC stream (ADTS wrapped AAC-LC, 128kbps)
 - `http://<phone-ip>:8080/test.mp3` - Test endpoint (currently streams AAC data)
+- `http://<phone-ip>:8080/test-static.wav` - **NEW** Static 5-second 440Hz sine wave with Content-Length header (for debugging)
 
 ### Data Flow
 ```

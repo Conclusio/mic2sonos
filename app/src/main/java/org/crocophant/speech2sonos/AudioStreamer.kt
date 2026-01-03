@@ -41,6 +41,8 @@ class AudioStreamer {
     companion object {
         private const val TAG = "AudioStreamer"
         private const val WAVEFORM_SAMPLES = 100
+        private const val HLS_SEGMENT_DURATION_MS = 2000L // 2 second segments
+        private const val HLS_MAX_SEGMENTS = 5 // Keep last 5 segments
     }
 
     private var audioRecord: AudioRecord? = null
@@ -56,6 +58,14 @@ class AudioStreamer {
     // Raw PCM data flow for WAV streaming
     private val _rawPcmFlow = MutableSharedFlow<ByteArray>(replay = 0, extraBufferCapacity = 64)
     private val rawPcmFlow = _rawPcmFlow.asSharedFlow()
+    
+    // HLS segment storage
+    private data class HlsSegment(val id: Int, val data: ByteArray, val durationMs: Long)
+    private val hlsSegments = mutableListOf<HlsSegment>()
+    private var hlsSegmentCounter = 0
+    private var currentSegmentBuffer = java.io.ByteArrayOutputStream()
+    private var currentSegmentStartTime = 0L
+    private val hlsLock = Any()
 
     private val _amplitudeFlow = MutableStateFlow(0f)
     val amplitudeFlow: StateFlow<Float> = _amplitudeFlow.asStateFlow()
@@ -152,60 +162,176 @@ class AudioStreamer {
                     call.response.header("icy-name", "Live Microphone")
                     call.respond(io.ktor.http.HttpStatusCode.OK)
                 }
-                // WAV stream endpoint - uncompressed PCM, should be universally compatible
+                // HEAD handler for WAV - Sonos may check headers first
+                head("/stream.wav") {
+                    Log.i(TAG, "=== STREAM WAV HEAD REQUEST ===")
+                    val fakeDataSize = 44100 * 2 * 60 * 10
+                    val totalHttpSize = 44 + fakeDataSize
+                    call.response.header("Content-Length", totalHttpSize.toString())
+                    call.response.header("Content-Type", "audio/wav")
+                    call.response.header("Accept-Ranges", "bytes")
+                    call.respond(io.ktor.http.HttpStatusCode.OK)
+                }
+                // Test: 5-second tone using buildWavFile function
+                get("/tone.wav") {
+                    Log.i(TAG, "=== TONE WAV REQUEST (using buildWavFile) ===")
+                    
+                    val durationSeconds = 5
+                    val frequency = 440.0
+                    val sampleRate = 44100
+                    val numSamples = sampleRate * durationSeconds
+                    val pcmData = ByteArray(numSamples * 2)
+                    
+                    for (i in 0 until numSamples) {
+                        val t = i.toDouble() / sampleRate
+                        val sample = (Math.sin(2 * Math.PI * frequency * t) * 32767).toInt().toShort()
+                        pcmData[i * 2] = (sample.toInt() and 0xFF).toByte()
+                        pcmData[i * 2 + 1] = (sample.toInt() shr 8).toByte()
+                    }
+                    
+                    val wavData = buildWavFile(pcmData)
+                    Log.i(TAG, "Serving tone WAV: ${wavData.size} bytes")
+                    
+                    call.response.header("Content-Length", wavData.size.toString())
+                    call.respondBytes(wavData, ContentType("audio", "wav"))
+                }
+                // Test: delayed tone to check if Sonos times out
+                get("/delay-tone.wav") {
+                    Log.i(TAG, "=== DELAYED TONE REQUEST - waiting 3 seconds ===")
+                    delay(3000)  // Simulate the buffering delay
+                    
+                    val durationSeconds = 5
+                    val frequency = 440.0
+                    val sampleRate = 44100
+                    val numSamples = sampleRate * durationSeconds
+                    val pcmData = ByteArray(numSamples * 2)
+                    
+                    for (i in 0 until numSamples) {
+                        val t = i.toDouble() / sampleRate
+                        val sample = (Math.sin(2 * Math.PI * frequency * t) * 32767).toInt().toShort()
+                        pcmData[i * 2] = (sample.toInt() and 0xFF).toByte()
+                        pcmData[i * 2 + 1] = (sample.toInt() shr 8).toByte()
+                    }
+                    
+                    val wavData = buildWavFile(pcmData)
+                    Log.i(TAG, "Serving delayed tone WAV: ${wavData.size} bytes")
+                    
+                    call.response.header("Content-Length", wavData.size.toString())
+                    call.respondBytes(wavData, ContentType("audio", "wav"))
+                }
+                // Mic buffer test: captures 3 seconds of mic audio, amplifies, serves as WAV
+                get("/mic.wav") {
+                    Log.i(TAG, "=== MIC WAV REQUEST ===")
+                    
+                    val bufferDurationMs = 3000
+                    val bytesNeeded = (44100 * 2 * bufferDurationMs) / 1000
+                    val pcmBuffer = java.io.ByteArrayOutputStream()
+                    
+                    Log.i(TAG, "Buffering $bufferDurationMs ms of mic audio...")
+                    
+                    val startTime = System.currentTimeMillis()
+                    var maxSample = 0
+                    try {
+                        rawPcmFlow.collect { chunk ->
+                            pcmBuffer.write(chunk)
+                            for (i in 0 until chunk.size / 2) {
+                                val sample = (chunk[i * 2].toInt() and 0xFF) or (chunk[i * 2 + 1].toInt() shl 8)
+                                val signed = sample.toShort().toInt()
+                                if (kotlin.math.abs(signed) > maxSample) {
+                                    maxSample = kotlin.math.abs(signed)
+                                }
+                            }
+                            if (pcmBuffer.size() >= bytesNeeded) {
+                                throw kotlinx.coroutines.CancellationException("Buffer full")
+                            }
+                            if (System.currentTimeMillis() - startTime > bufferDurationMs + 1000) {
+                                throw kotlinx.coroutines.CancellationException("Timeout")
+                            }
+                        }
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        Log.i(TAG, "Buffered ${pcmBuffer.size()} bytes, max sample: $maxSample")
+                    }
+                    
+                    // Amplify mic audio by 10x to check if it's a volume issue
+                    val rawPcm = pcmBuffer.toByteArray()
+                    val amplifiedPcm = ByteArray(rawPcm.size)
+                    for (i in 0 until rawPcm.size / 2) {
+                        val sample = (rawPcm[i * 2].toInt() and 0xFF) or (rawPcm[i * 2 + 1].toInt() shl 8)
+                        val signed = sample.toShort().toInt()
+                        val amplified = (signed * 10).coerceIn(-32768, 32767).toShort()
+                        amplifiedPcm[i * 2] = (amplified.toInt() and 0xFF).toByte()
+                        amplifiedPcm[i * 2 + 1] = (amplified.toInt() shr 8).toByte()
+                    }
+                    
+                    val wavData = buildWavFile(amplifiedPcm)
+                    Log.i(TAG, "Serving amplified mic WAV: ${wavData.size} bytes")
+                    
+                    call.response.header("Content-Length", wavData.size.toString())
+                    call.respondBytes(wavData, ContentType("audio", "wav"))
+                }
+                // WAV stream endpoint - with fake Content-Length for Sonos compatibility
                 get("/stream.wav") {
                     Log.i(TAG, "=== STREAM WAV REQUEST RECEIVED ===")
                     Log.i(TAG, "Client: ${call.request.local.remoteHost}")
                     Log.i(TAG, "User-Agent: ${call.request.headers["User-Agent"]}")
                     
-                    call.response.header("Cache-Control", "no-cache, no-store")
-                    call.response.header("Pragma", "no-cache")
-                    call.response.header("Accept-Ranges", "none")
-                    call.response.header("icy-name", "Live Microphone")
+                    // Fake file size: 10 minutes of 44.1kHz 16-bit mono = 52,920,000 bytes of PCM data
+                    val fakeDataSize = 44100 * 2 * 60 * 10
+                    val fakeFileSize = 36 + fakeDataSize  // RIFF chunk size (excludes first 8 bytes)
+                    val totalHttpSize = 44 + fakeDataSize // Full WAV file size
                     
-                    // Stream raw PCM as WAV (no header needed for streaming, or with a fake header)
+                    call.response.header("Content-Length", totalHttpSize.toString())
+                    call.response.header("Cache-Control", "no-cache, no-store")
+                    call.response.header("Accept-Ranges", "none")
+                    
                     call.respondOutputStream(ContentType("audio", "wav")) {
-                        Log.i(TAG, "Starting to stream WAV audio data...")
+                        Log.i(TAG, "Starting WAV stream with Content-Length: $totalHttpSize")
                         
-                        // Write a minimal WAV header for streaming (unknown length)
-                        // RIFF header
+                        // WAV header with fake but valid file size
                         write("RIFF".toByteArray())
-                        write(byteArrayOf(0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0x7F.toByte())) // Max file size
+                        write(byteArrayOf(
+                            (fakeFileSize and 0xFF).toByte(),
+                            ((fakeFileSize shr 8) and 0xFF).toByte(),
+                            ((fakeFileSize shr 16) and 0xFF).toByte(),
+                            ((fakeFileSize shr 24) and 0xFF).toByte()
+                        ))
                         write("WAVE".toByteArray())
                         
                         // fmt chunk
                         write("fmt ".toByteArray())
-                        write(byteArrayOf(16, 0, 0, 0)) // Chunk size = 16
-                        write(byteArrayOf(1, 0)) // Audio format = 1 (PCM)
-                        write(byteArrayOf(1, 0)) // Num channels = 1 (mono)
-                        write(byteArrayOf(0x44, 0xAC.toByte(), 0, 0)) // Sample rate = 44100
-                        write(byteArrayOf(0x88.toByte(), 0x58, 0x01, 0)) // Byte rate = 88200
-                        write(byteArrayOf(2, 0)) // Block align = 2
-                        write(byteArrayOf(16, 0)) // Bits per sample = 16
+                        write(byteArrayOf(16, 0, 0, 0))
+                        write(byteArrayOf(1, 0)) // PCM
+                        write(byteArrayOf(1, 0)) // Mono
+                        write(byteArrayOf(0x44, 0xAC.toByte(), 0, 0)) // 44100 Hz
+                        write(byteArrayOf(0x88.toByte(), 0x58, 0x01, 0)) // 88200 bytes/sec
+                        write(byteArrayOf(2, 0)) // Block align
+                        write(byteArrayOf(16, 0)) // 16-bit
                         
                         // data chunk
                         write("data".toByteArray())
-                        write(byteArrayOf(0xFF.toByte(), 0xFF.toByte(), 0xFF.toByte(), 0x7F.toByte())) // Max data size
-                        
+                        write(byteArrayOf(
+                            (fakeDataSize and 0xFF).toByte(),
+                            ((fakeDataSize shr 8) and 0xFF).toByte(),
+                            ((fakeDataSize shr 16) and 0xFF).toByte(),
+                            ((fakeDataSize shr 24) and 0xFF).toByte()
+                        ))
                         flush()
-                        Log.i(TAG, "WAV header written, now streaming PCM data...")
+                        Log.i(TAG, "WAV header written, streaming PCM...")
                         
                         try {
                             var chunkCount = 0
                             var totalBytes = 0L
-                            // For WAV, we need raw PCM data, not encoded AAC
-                            // We'll need to add a separate flow for raw PCM
                             rawPcmFlow.collect { pcmChunk ->
                                 write(pcmChunk)
                                 flush()
                                 chunkCount++
                                 totalBytes += pcmChunk.size
                                 if (chunkCount % 50 == 0) {
-                                    Log.d(TAG, "Streamed WAV $chunkCount chunks, $totalBytes bytes total")
+                                    Log.d(TAG, "Streamed WAV $chunkCount chunks, $totalBytes bytes")
                                 }
                             }
                         } catch (e: IOException) {
-                            Log.d(TAG, "WAV client disconnected")
+                            Log.d(TAG, "WAV client disconnected: ${e.message}")
                         } catch (e: Exception) {
                             Log.e(TAG, "Error streaming WAV", e)
                         }
@@ -243,6 +369,131 @@ class AudioStreamer {
                         }
                     }
                 }
+                // Static test WAV - generates a 5-second 440Hz sine wave
+                // If this plays on Sonos, the issue is with streaming format, not network path
+                get("/test-static.wav") {
+                    Log.i(TAG, "=== STATIC WAV TEST REQUEST ===")
+                    Log.i(TAG, "Client: ${call.request.local.remoteHost}")
+                    
+                    // Generate a 5-second 440Hz sine wave
+                    val durationSeconds = 5
+                    val frequency = 440.0
+                    val sampleRate = 44100
+                    val numSamples = sampleRate * durationSeconds
+                    val pcmData = ByteArray(numSamples * 2) // 16-bit samples
+                    
+                    for (i in 0 until numSamples) {
+                        val t = i.toDouble() / sampleRate
+                        val sample = (Math.sin(2 * Math.PI * frequency * t) * 32767).toInt().toShort()
+                        pcmData[i * 2] = (sample.toInt() and 0xFF).toByte()
+                        pcmData[i * 2 + 1] = (sample.toInt() shr 8).toByte()
+                    }
+                    
+                    // Build complete WAV file with correct sizes
+                    val dataSize = pcmData.size
+                    val fileSize = 36 + dataSize
+                    
+                    val wavFile = java.io.ByteArrayOutputStream()
+                    // RIFF header
+                    wavFile.write("RIFF".toByteArray())
+                    wavFile.write(byteArrayOf(
+                        (fileSize and 0xFF).toByte(),
+                        ((fileSize shr 8) and 0xFF).toByte(),
+                        ((fileSize shr 16) and 0xFF).toByte(),
+                        ((fileSize shr 24) and 0xFF).toByte()
+                    ))
+                    wavFile.write("WAVE".toByteArray())
+                    
+                    // fmt chunk
+                    wavFile.write("fmt ".toByteArray())
+                    wavFile.write(byteArrayOf(16, 0, 0, 0)) // Chunk size = 16
+                    wavFile.write(byteArrayOf(1, 0)) // Audio format = 1 (PCM)
+                    wavFile.write(byteArrayOf(1, 0)) // Num channels = 1 (mono)
+                    wavFile.write(byteArrayOf(0x44, 0xAC.toByte(), 0, 0)) // Sample rate = 44100
+                    wavFile.write(byteArrayOf(0x88.toByte(), 0x58, 0x01, 0)) // Byte rate = 88200
+                    wavFile.write(byteArrayOf(2, 0)) // Block align = 2
+                    wavFile.write(byteArrayOf(16, 0)) // Bits per sample = 16
+                    
+                    // data chunk
+                    wavFile.write("data".toByteArray())
+                    wavFile.write(byteArrayOf(
+                        (dataSize and 0xFF).toByte(),
+                        ((dataSize shr 8) and 0xFF).toByte(),
+                        ((dataSize shr 16) and 0xFF).toByte(),
+                        ((dataSize shr 24) and 0xFF).toByte()
+                    ))
+                    wavFile.write(pcmData)
+                    
+                    val wavBytes = wavFile.toByteArray()
+                    Log.i(TAG, "Generated static WAV: ${wavBytes.size} bytes, $durationSeconds seconds")
+                    
+                    call.response.header("Content-Length", wavBytes.size.toString())
+                    call.respondBytes(wavBytes, ContentType("audio", "wav"))
+                }
+                // HLS playlist endpoint
+                get("/live.m3u8") {
+                    Log.i(TAG, "=== HLS PLAYLIST REQUEST ===")
+                    Log.i(TAG, "Client: ${call.request.local.remoteHost}")
+                    
+                    val playlist = synchronized(hlsLock) {
+                        if (hlsSegments.isEmpty()) {
+                            // Return empty playlist if no segments yet
+                            """#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:3
+#EXT-X-MEDIA-SEQUENCE:0
+"""
+                        } else {
+                            val firstSegment = hlsSegments.first()
+                            val sb = StringBuilder()
+                            sb.append("#EXTM3U\n")
+                            sb.append("#EXT-X-VERSION:3\n")
+                            sb.append("#EXT-X-TARGETDURATION:3\n")
+                            sb.append("#EXT-X-MEDIA-SEQUENCE:${firstSegment.id}\n")
+                            
+                            for (segment in hlsSegments) {
+                                val durationSec = segment.durationMs / 1000.0
+                                sb.append("#EXTINF:${"%.3f".format(durationSec)},\n")
+                                sb.append("segment-${segment.id}.wav\n")
+                            }
+                            sb.toString()
+                        }
+                    }
+                    
+                    Log.d(TAG, "Serving playlist:\n$playlist")
+                    call.response.header("Cache-Control", "no-cache, no-store")
+                    call.respondText(playlist, ContentType("application", "vnd.apple.mpegurl"))
+                }
+                
+                // HLS segment endpoint
+                get("/segment-{id}.wav") {
+                    val segmentId = call.parameters["id"]?.toIntOrNull()
+                    Log.i(TAG, "=== HLS SEGMENT REQUEST: $segmentId ===")
+                    
+                    if (segmentId == null) {
+                        call.respond(io.ktor.http.HttpStatusCode.BadRequest, "Invalid segment ID")
+                        return@get
+                    }
+                    
+                    val segment = synchronized(hlsLock) {
+                        hlsSegments.find { it.id == segmentId }
+                    }
+                    
+                    if (segment == null) {
+                        Log.w(TAG, "Segment $segmentId not found")
+                        call.respond(io.ktor.http.HttpStatusCode.NotFound, "Segment not found")
+                        return@get
+                    }
+                    
+                    // Build WAV with proper header
+                    val wavData = buildWavFile(segment.data)
+                    Log.d(TAG, "Serving segment $segmentId: ${wavData.size} bytes")
+                    
+                    call.response.header("Content-Length", wavData.size.toString())
+                    call.response.header("Cache-Control", "no-cache")
+                    call.respondBytes(wavData, ContentType("audio", "wav"))
+                }
+                
                 get("/stream.aac") {
                     Log.i(TAG, "=== STREAM AAC REQUEST RECEIVED ===")
                     Log.i(TAG, "Client: ${call.request.local.remoteHost}")
@@ -341,7 +592,11 @@ class AudioStreamer {
                             Log.d(TAG, "PCM data max sample: $maxSample (should be > 0 if mic is capturing)")
                         }
                     }
-                    _rawPcmFlow.tryEmit(pcmBuffer.copyOf(bytesRead))
+                    val pcmCopy = pcmBuffer.copyOf(bytesRead)
+                    _rawPcmFlow.tryEmit(pcmCopy)
+                    
+                    // Add to HLS segment buffer
+                    addPcmToHlsSegment(pcmCopy)
 
                     val inputBufferIndex = codec.dequeueInputBuffer(10000)
                     if (inputBufferIndex >= 0) {
@@ -403,6 +658,73 @@ class AudioStreamer {
         return amplified
     }
 
+    private fun buildWavFile(pcmData: ByteArray): ByteArray {
+        val dataSize = pcmData.size
+        val fileSize = 36 + dataSize
+        
+        val wavFile = java.io.ByteArrayOutputStream()
+        // RIFF header
+        wavFile.write("RIFF".toByteArray())
+        wavFile.write(byteArrayOf(
+            (fileSize and 0xFF).toByte(),
+            ((fileSize shr 8) and 0xFF).toByte(),
+            ((fileSize shr 16) and 0xFF).toByte(),
+            ((fileSize shr 24) and 0xFF).toByte()
+        ))
+        wavFile.write("WAVE".toByteArray())
+        
+        // fmt chunk
+        wavFile.write("fmt ".toByteArray())
+        wavFile.write(byteArrayOf(16, 0, 0, 0)) // Chunk size = 16
+        wavFile.write(byteArrayOf(1, 0)) // Audio format = 1 (PCM)
+        wavFile.write(byteArrayOf(1, 0)) // Num channels = 1 (mono)
+        wavFile.write(byteArrayOf(0x44, 0xAC.toByte(), 0, 0)) // Sample rate = 44100
+        wavFile.write(byteArrayOf(0x88.toByte(), 0x58, 0x01, 0)) // Byte rate = 88200
+        wavFile.write(byteArrayOf(2, 0)) // Block align = 2
+        wavFile.write(byteArrayOf(16, 0)) // Bits per sample = 16
+        
+        // data chunk
+        wavFile.write("data".toByteArray())
+        wavFile.write(byteArrayOf(
+            (dataSize and 0xFF).toByte(),
+            ((dataSize shr 8) and 0xFF).toByte(),
+            ((dataSize shr 16) and 0xFF).toByte(),
+            ((dataSize shr 24) and 0xFF).toByte()
+        ))
+        wavFile.write(pcmData)
+        
+        return wavFile.toByteArray()
+    }
+    
+    private fun addPcmToHlsSegment(pcmChunk: ByteArray) {
+        synchronized(hlsLock) {
+            if (currentSegmentStartTime == 0L) {
+                currentSegmentStartTime = System.currentTimeMillis()
+            }
+            
+            currentSegmentBuffer.write(pcmChunk)
+            
+            val elapsed = System.currentTimeMillis() - currentSegmentStartTime
+            if (elapsed >= HLS_SEGMENT_DURATION_MS) {
+                // Finalize current segment
+                val segmentData = currentSegmentBuffer.toByteArray()
+                val segment = HlsSegment(hlsSegmentCounter++, segmentData, elapsed)
+                hlsSegments.add(segment)
+                Log.d(TAG, "Created HLS segment ${segment.id}: ${segmentData.size} bytes, ${elapsed}ms")
+                
+                // Keep only last N segments
+                while (hlsSegments.size > HLS_MAX_SEGMENTS) {
+                    val removed = hlsSegments.removeAt(0)
+                    Log.d(TAG, "Removed old HLS segment ${removed.id}")
+                }
+                
+                // Reset for next segment
+                currentSegmentBuffer = java.io.ByteArrayOutputStream()
+                currentSegmentStartTime = System.currentTimeMillis()
+            }
+        }
+    }
+    
     private fun createAdtsHeader(length: Int): ByteArray {
         val frameLength = length + 7
         val adtsHeader = ByteArray(7)
@@ -448,6 +770,14 @@ class AudioStreamer {
     private fun cleanup() {
         recordingJob?.cancel()
         recordingJob = null
+        
+        // Clear HLS state
+        synchronized(hlsLock) {
+            hlsSegments.clear()
+            hlsSegmentCounter = 0
+            currentSegmentBuffer = java.io.ByteArrayOutputStream()
+            currentSegmentStartTime = 0L
+        }
 
         try {
             audioRecord?.stop()

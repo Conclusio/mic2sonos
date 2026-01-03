@@ -243,11 +243,24 @@ class SonosController(private val context: Context) {
     }
     
     suspend fun playLocalTest(device: SonosDevice, localIp: String) {
-        // Use WAV stream endpoint - uncompressed PCM should work universally
-        val testUrl = "http://$localIp:8080/stream.wav"
-        Log.i(TAG, "Testing with local WAV URL: $testUrl")
-        // WAV files work with plain HTTP
-        play(device, testUrl, "Live Microphone", forceRadio = false)
+        // Test tone using buildWavFile function - isolates if buildWavFile is correct
+        val testUrl = "http://$localIp:8080/tone.wav"
+        Log.i(TAG, "Testing with tone WAV (buildWavFile): $testUrl")
+        play(device, testUrl, "Test Tone", forceRadio = false)
+    }
+    
+    suspend fun playStaticTest(device: SonosDevice, localIp: String) {
+        // Mic audio buffer test - amplified 10x
+        val testUrl = "http://$localIp:8080/mic.wav"
+        Log.i(TAG, "Testing with amplified mic WAV: $testUrl")
+        play(device, testUrl, "Mic Test", forceRadio = false)
+    }
+    
+    suspend fun playHlsStream(device: SonosDevice, localIp: String) {
+        // HLS stream with m3u8 playlist - Sonos has excellent HLS support
+        val hlsUrl = "http://$localIp:8080/live.m3u8"
+        Log.i(TAG, "Starting HLS stream: $hlsUrl")
+        play(device, hlsUrl, "Live Microphone", forceRadio = false)
     }
 
     suspend fun stop(device: SonosDevice) {

@@ -242,6 +242,89 @@ class SonosViewModel(private val audioStreamer: AudioStreamer, private val sonos
             }
         }
     }
+    
+    fun testStaticWav() {
+        if (_selectedDevices.value.isEmpty()) {
+            _errorMessage.value = "Please select at least one device"
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                // Start the server first (needed to serve static WAV)
+                val started = audioStreamer.start()
+                if (!started) {
+                    _errorMessage.value = "Failed to start server"
+                    return@launch
+                }
+                
+                val ipAddress = sonosController.getDeviceIpAddress()
+                if (ipAddress == null) {
+                    _errorMessage.value = "Could not determine device IP address"
+                    audioStreamer.stop()
+                    return@launch
+                }
+                
+                android.util.Log.i("SonosViewModel", "Testing static WAV at http://$ipAddress:8080/test-static.wav")
+                _selectedDevices.value.forEach { device ->
+                    try {
+                        sonosController.playStaticTest(device, ipAddress)
+                    } catch (e: Exception) {
+                        _errorMessage.value = "Failed on ${device.name}: ${e.message}"
+                    }
+                }
+            } catch (e: Exception) {
+                _errorMessage.value = "Static WAV test error: ${e.message}"
+            }
+        }
+    }
+    
+    fun startHlsStream() {
+        if (!permissionGranted) {
+            _errorMessage.value = "Microphone permission not granted"
+            return
+        }
+        
+        if (_selectedDevices.value.isEmpty()) {
+            _errorMessage.value = "Please select at least one device"
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                val started = audioStreamer.start()
+                if (!started) {
+                    _errorMessage.value = "Failed to start audio streaming"
+                    return@launch
+                }
+                
+                val ipAddress = sonosController.getDeviceIpAddress()
+                if (ipAddress == null) {
+                    _errorMessage.value = "Could not determine device IP address"
+                    audioStreamer.stop()
+                    return@launch
+                }
+                
+                // Wait a bit for first HLS segment to be created
+                android.util.Log.i("SonosViewModel", "Waiting for HLS segments to build...")
+                kotlinx.coroutines.delay(2500) // Wait for first segment
+                
+                _isRecording.value = true
+                
+                android.util.Log.i("SonosViewModel", "Starting HLS stream at http://$ipAddress:8080/live.m3u8")
+                _selectedDevices.value.forEach { device ->
+                    try {
+                        sonosController.playHlsStream(device, ipAddress)
+                    } catch (e: Exception) {
+                        _errorMessage.value = "Failed on ${device.name}: ${e.message}"
+                    }
+                }
+            } catch (e: Exception) {
+                _errorMessage.value = "HLS stream error: ${e.message}"
+                _isRecording.value = false
+            }
+        }
+    }
 
     private suspend fun startTestPlayback() {
         _isTesting.value = true
@@ -373,6 +456,8 @@ fun SonosScreen(
                 onToggleRecording = { viewModel.toggleRecording() },
                 onToggleTest = { viewModel.toggleTestPlayback() },
                 onTestLocalServer = { viewModel.testLocalServer() },
+                onTestStaticWav = { viewModel.testStaticWav() },
+                onStartHls = { viewModel.startHlsStream() },
                 enabled = viewModel.permissionGranted,
                 modifier = Modifier.padding(bottom = 24.dp)
             )
@@ -469,13 +554,15 @@ fun BottomControls(
     onToggleRecording: () -> Unit,
     onToggleTest: () -> Unit,
     onTestLocalServer: () -> Unit,
+    onTestStaticWav: () -> Unit,
+    onStartHls: () -> Unit,
     enabled: Boolean,
     modifier: Modifier = Modifier
 ) {
     Column(
         modifier = modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Row(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -488,10 +575,28 @@ fun BottomControls(
             }
             
             OutlinedButton(
+                onClick = onTestStaticWav,
+                enabled = enabled && !isRecording
+            ) {
+                Text("Static WAV")
+            }
+        }
+        
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            OutlinedButton(
                 onClick = onTestLocalServer,
                 enabled = enabled && !isRecording
             ) {
                 Text("Test Local")
+            }
+            
+            OutlinedButton(
+                onClick = onStartHls,
+                enabled = enabled && !isRecording
+            ) {
+                Text("HLS Stream")
             }
         }
 
