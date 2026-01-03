@@ -24,6 +24,8 @@ class SonosController(private val context: Context) {
             requestTimeout = 10000
         }
     }
+    
+    private val audioClip = SonosAudioClip()
 
     suspend fun play(device: SonosDevice, streamUrl: String, title: String = "Live Microphone", forceRadio: Boolean = true) {
         val url = "http://${device.ipAddress}:${device.port}/MediaRenderer/AVTransport/Control"
@@ -261,6 +263,42 @@ class SonosController(private val context: Context) {
         val hlsUrl = "http://$localIp:8080/live.m3u8"
         Log.i(TAG, "Starting HLS stream: $hlsUrl")
         play(device, hlsUrl, "Live Microphone", forceRadio = false)
+    }
+    
+    /**
+     * Play audio as an announcement with automatic ducking.
+     * Uses the Sonos audioClip API which ducks current playback
+     * and restores it after the clip finishes.
+     * 
+     * @param device The Sonos device to announce on
+     * @param streamUrl The URL of the audio stream to play
+     * @param volume Optional announcement volume (0-100), doesn't affect music volume
+     * @return Result with success/failure info
+     */
+    suspend fun playAnnouncement(
+        device: SonosDevice,
+        streamUrl: String,
+        volume: Int? = null
+    ): Result<AudioClipResponse> {
+        Log.i(TAG, "Playing announcement on ${device.name}: $streamUrl (volume: $volume)")
+        return audioClip.playAudioClip(device, streamUrl, volume)
+    }
+    
+    /**
+     * Play live microphone stream as an announcement.
+     * The currently playing music will be ducked and restored after streaming stops.
+     */
+    suspend fun playAnnouncementStream(device: SonosDevice, localIp: String, volume: Int? = null): Result<AudioClipResponse> {
+        val streamUrl = "http://$localIp:8080/stream.wav"
+        Log.i(TAG, "Starting announcement stream: $streamUrl")
+        return playAnnouncement(device, streamUrl, volume)
+    }
+    
+    /**
+     * Check if a device supports the announcement/audioClip feature.
+     */
+    suspend fun supportsAnnouncement(device: SonosDevice): Boolean {
+        return audioClip.supportsAudioClip(device)
     }
 
     suspend fun stop(device: SonosDevice) {

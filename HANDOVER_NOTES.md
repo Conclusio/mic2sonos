@@ -99,9 +99,47 @@ vlc http://<phone-ip>:8080/stream.wav
 
 ---
 
+## Announce Feature (NEW)
+
+### How It Works
+The announce feature uses Sonos's **audioClip API** via WebSocket on port 1443. This is the same API that Home Assistant uses for announcements.
+
+When you play an announcement:
+1. Sonos automatically **ducks** (lowers) the currently playing music
+2. Plays the announcement audio at the specified volume
+3. **Restores** music volume when the announcement finishes
+
+### Implementation Details
+- **WebSocket connection**: `wss://<device-ip>:1443/websocket/api`
+- **API Key header**: `X-Sonos-Api-Key: 123e4567-e89b-12d3-a456-426655440000`
+- **Protocol header**: `Sec-WebSocket-Protocol: v1.api.smartspeaker.audio`
+- **Namespace**: `audioClip:1` with `loadAudioClip` command
+
+### Key Files
+- `SonosAudioClip.kt` - WebSocket client for audioClip API
+- Integrated into `SonosController.kt` via `playAnnouncement()` and `playAnnouncementStream()`
+
+### API Command Format
+```json
+[
+  {"namespace": "audioClip:1", "command": "loadAudioClip", "playerId": "<player-id>"},
+  {"name": "Speech2Sonos", "appId": "org.crocophant.speech2sonos", "streamUrl": "<url>", "volume": 50}
+]
+```
+
+### Requirements
+- Device must have `AUDIO_CLIP` capability (most modern Sonos devices)
+- Self-signed SSL certificates are accepted (required for local network WSS)
+
+### Test Button
+Enable "Show Test Button" in settings to see the "Test Announce" button. This plays a sample MP3 with ducking to verify the feature works.
+
+---
+
 ## Future Improvements
 
 1. **Multi-room support** - Stream to multiple Sonos speakers simultaneously
 2. **Longer sessions** - Restart stream automatically before 10-minute limit
 3. **Dynamic gain control** - Auto-adjust amplification based on input level
 4. **AAC/MP3 encoding** - Reduce bandwidth for better network performance
+5. **Announce mode for mic streaming** - Use audioClip API for live mic with ducking

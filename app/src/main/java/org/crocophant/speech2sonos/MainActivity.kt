@@ -161,7 +161,8 @@ class SonosViewModel(
     val waveformData: StateFlow<List<Float>> = audioStreamer.waveformData
     
     val amplification: StateFlow<Int> = appSettings.amplification
-    val showTestButton: StateFlow<Boolean> = appSettings.showTestButton
+    val announcementMode: StateFlow<Boolean> = appSettings.announcementMode
+    val announcementVolume: StateFlow<Int> = appSettings.announcementVolume
 
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
@@ -178,8 +179,12 @@ class SonosViewModel(
         audioStreamer.setAmplification(value)
     }
     
-    fun setShowTestButton(show: Boolean) {
-        appSettings.setShowTestButton(show)
+    fun setAnnouncementMode(enabled: Boolean) {
+        appSettings.setAnnouncementMode(enabled)
+    }
+    
+    fun setAnnouncementVolume(value: Int) {
+        appSettings.setAnnouncementVolume(value)
     }
     
     init {
@@ -363,6 +368,106 @@ class SonosViewModel(
             }
         }
     }
+    
+    /**
+     * Test the announce feature with a sample audio file.
+     * This plays audio over currently playing music with automatic ducking.
+     */
+    fun testAnnounce() {
+        if (_selectedDevices.value.isEmpty()) {
+            _errorMessage.value = "Please select at least one device"
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                // Use a well-known test audio file
+                val testUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
+                android.util.Log.i("SonosViewModel", "Testing announcement with: $testUrl")
+                
+                _selectedDevices.value.forEach { device ->
+                    try {
+                        val result = sonosController.playAnnouncement(device, testUrl, volume = 30)
+                        result.fold(
+                            onSuccess = { response ->
+                                if (response.success) {
+                                    android.util.Log.i("SonosViewModel", "Announcement started on ${device.name}, clipId: ${response.clipId}")
+                                } else {
+                                    _errorMessage.value = "Announce failed on ${device.name}: ${response.error}"
+                                }
+                            },
+                            onFailure = { e ->
+                                _errorMessage.value = "Announce failed on ${device.name}: ${e.message}"
+                            }
+                        )
+                    } catch (e: Exception) {
+                        _errorMessage.value = "Announce failed on ${device.name}: ${e.message}"
+                    }
+                }
+            } catch (e: Exception) {
+                _errorMessage.value = "Announce error: ${e.message}"
+            }
+        }
+    }
+    
+    /**
+     * Start streaming microphone audio as an announcement.
+     * The currently playing music will be ducked automatically.
+     */
+    fun startAnnouncementStream() {
+        if (!permissionGranted) {
+            _errorMessage.value = "Microphone permission not granted"
+            return
+        }
+        
+        if (_selectedDevices.value.isEmpty()) {
+            _errorMessage.value = "Please select at least one device"
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                val started = audioStreamer.start()
+                if (!started) {
+                    _errorMessage.value = "Failed to start audio streaming"
+                    return@launch
+                }
+                
+                val ipAddress = sonosController.getDeviceIpAddress()
+                if (ipAddress == null) {
+                    _errorMessage.value = "Could not determine device IP address"
+                    audioStreamer.stop()
+                    return@launch
+                }
+                
+                _isRecording.value = true
+                
+                android.util.Log.i("SonosViewModel", "Starting announcement stream at http://$ipAddress:8080/stream.wav")
+                _selectedDevices.value.forEach { device ->
+                    try {
+                        val result = sonosController.playAnnouncementStream(device, ipAddress, volume = 50)
+                        result.fold(
+                            onSuccess = { response ->
+                                if (response.success) {
+                                    android.util.Log.i("SonosViewModel", "Announcement stream started on ${device.name}")
+                                } else {
+                                    _errorMessage.value = "Announce stream failed on ${device.name}: ${response.error}"
+                                }
+                            },
+                            onFailure = { e ->
+                                _errorMessage.value = "Announce stream failed on ${device.name}: ${e.message}"
+                            }
+                        )
+                    } catch (e: Exception) {
+                        _errorMessage.value = "Failed on ${device.name}: ${e.message}"
+                    }
+                }
+            } catch (e: Exception) {
+                _errorMessage.value = "Announcement stream error: ${e.message}"
+                _isRecording.value = false
+            }
+        }
+    }
 
     private suspend fun startTestPlayback() {
         _isTesting.value = true
@@ -402,11 +507,29 @@ class SonosViewModel(
 
         _isRecording.value = true
 
-        // Use WAV streaming with amplification (this works!)
+        val useAnnouncement = appSettings.announcementMode.value
         val streamUrl = "http://$ipAddress:8080/stream.wav"
+        
         _selectedDevices.value.forEach { device ->
             try {
-                sonosController.play(device, streamUrl, "Live Microphone", forceRadio = false)
+                if (useAnnouncement) {
+                    // Use announcement mode with ducking
+                    val volume = appSettings.announcementVolume.value
+                    val result = sonosController.playAnnouncementStream(device, ipAddress, volume = volume)
+                    result.fold(
+                        onSuccess = { response ->
+                            if (!response.success) {
+                                _errorMessage.value = "Announce failed on ${device.name}: ${response.error}"
+                            }
+                        },
+                        onFailure = { e ->
+                            _errorMessage.value = "Announce failed on ${device.name}: ${e.message}"
+                        }
+                    )
+                } else {
+                    // Use traditional streaming without ducking
+                    sonosController.play(device, streamUrl, "Live Microphone", forceRadio = false)
+                }
             } catch (e: Exception) {
                 _errorMessage.value = "Failed to start playback on ${device.name}: ${e.message}"
             }
@@ -414,11 +537,17 @@ class SonosViewModel(
     }
 
     private suspend fun stopStreaming() {
-        _selectedDevices.value.forEach { device ->
-            try {
-                sonosController.stop(device)
-            } catch (e: Exception) {
-                // Ignore stop errors
+        val useAnnouncement = appSettings.announcementMode.value
+        
+        // Only stop device playback if not using announcement mode
+        // In announcement mode, stopping the audio stream will naturally end the clip
+        if (!useAnnouncement) {
+            _selectedDevices.value.forEach { device ->
+                try {
+                    sonosController.stop(device)
+                } catch (e: Exception) {
+                    // Ignore stop errors
+                }
             }
         }
         audioStreamer.stop()
@@ -444,7 +573,8 @@ fun SonosScreen(
     val waveformData by viewModel.waveformData.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
     val amplification by viewModel.amplification.collectAsState()
-    val showTestButton by viewModel.showTestButton.collectAsState()
+    val announcementMode by viewModel.announcementMode.collectAsState()
+    val announcementVolume by viewModel.announcementVolume.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     var showSettings by remember { mutableStateOf(false) }
     var showGainSlider by remember { mutableStateOf(false) }
@@ -464,9 +594,11 @@ fun SonosScreen(
         ) {
             SettingsContent(
                 amplification = amplification,
-                showTestButton = showTestButton,
+                announcementMode = announcementMode,
+                announcementVolume = announcementVolume,
                 onAmplificationChange = { viewModel.setAmplification(it) },
-                onShowTestButtonChange = { viewModel.setShowTestButton(it) }
+                onAnnouncementModeChange = { viewModel.setAnnouncementMode(it) },
+                onAnnouncementVolumeChange = { viewModel.setAnnouncementVolume(it) }
             )
         }
     }
@@ -545,10 +677,7 @@ fun SonosScreen(
 
             BottomControls(
                 isRecording = isRecording,
-                isTesting = isTesting,
-                showTestButton = showTestButton,
                 onToggleRecording = { viewModel.toggleRecording() },
-                onToggleTest = { viewModel.toggleTestPlayback() },
                 enabled = viewModel.permissionGranted,
                 modifier = Modifier.padding(bottom = 24.dp)
             )
@@ -665,9 +794,11 @@ fun GainSlider(
 @Composable
 fun SettingsContent(
     amplification: Int,
-    showTestButton: Boolean,
+    announcementMode: Boolean,
+    announcementVolume: Int,
     onAmplificationChange: (Int) -> Unit,
-    onShowTestButtonChange: (Boolean) -> Unit
+    onAnnouncementModeChange: (Boolean) -> Unit,
+    onAnnouncementVolumeChange: (Int) -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -705,16 +836,38 @@ fun SettingsContent(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column {
-                Text("Show Test Button", style = MaterialTheme.typography.bodyLarge)
+                Text("Announcement Mode", style = MaterialTheme.typography.bodyLarge)
                 Text(
-                    "Test with internet audio",
+                    if (announcementMode) "Ducks playback when speaking" else "Overlays microphone audio",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             Switch(
-                checked = showTestButton,
-                onCheckedChange = onShowTestButtonChange
+                checked = announcementMode,
+                onCheckedChange = onAnnouncementModeChange
+            )
+        }
+        
+        Column {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("Announcement Volume", style = MaterialTheme.typography.bodyLarge)
+                Text("${announcementVolume}", style = MaterialTheme.typography.bodyLarge)
+            }
+            Slider(
+                value = announcementVolume.toFloat(),
+                onValueChange = { onAnnouncementVolumeChange(it.toInt()) },
+                valueRange = 0f..100f,
+                steps = 99,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text(
+                "Volume level for announcements (0-100)",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
         
@@ -725,10 +878,7 @@ fun SettingsContent(
 @Composable
 fun BottomControls(
     isRecording: Boolean,
-    isTesting: Boolean,
-    showTestButton: Boolean,
     onToggleRecording: () -> Unit,
-    onToggleTest: () -> Unit,
     enabled: Boolean,
     modifier: Modifier = Modifier
 ) {
@@ -737,15 +887,6 @@ fun BottomControls(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        AnimatedVisibility(visible = showTestButton) {
-            OutlinedButton(
-                onClick = onToggleTest,
-                enabled = enabled && !isRecording
-            ) {
-                Text(if (isTesting) "Stop Test" else "Test Internet Audio")
-            }
-        }
-
         FloatingActionButton(
             onClick = onToggleRecording,
             modifier = Modifier.size(72.dp),

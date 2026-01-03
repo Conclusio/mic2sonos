@@ -59,6 +59,10 @@ dependencies {
     implementation("io.ktor:ktor-server-status-pages:2.3.11")
     implementation("io.ktor:ktor-client-core:2.3.11")
     implementation("io.ktor:ktor-client-cio:2.3.11")
+    implementation("io.ktor:ktor-client-websockets:2.3.11")
+    
+    // JSON serialization for WebSocket messages
+    implementation("org.json:json:20231013")
 
     // SLF4J logging
     implementation("org.slf4j:slf4j-nop:2.0.12")
