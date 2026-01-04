@@ -10,16 +10,9 @@ import kotlinx.coroutines.flow.StateFlow
 data class SonosDevice(
     val name: String,
     val ipAddress: String,
-    val port: Int
-) {
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (other !is SonosDevice) return false
-        return ipAddress == other.ipAddress
-    }
-
-    override fun hashCode(): Int = ipAddress.hashCode()
-}
+    val port: Int,
+    val nowPlayingInfo: NowPlayingInfo = NowPlayingInfo()
+)
 
 class SonosDiscovery(private val context: Context) {
 

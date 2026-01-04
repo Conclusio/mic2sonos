@@ -3,6 +3,7 @@ package org.crocophant.speech2sonos
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -30,6 +31,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Checkbox
@@ -49,6 +51,8 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -58,12 +62,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import coil.compose.AsyncImagePainter
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -87,7 +95,7 @@ class MainActivity : ComponentActivity() {
         }
 
     private val viewModel: SonosViewModel by lazy {
-        ViewModelProvider(this, SonosViewModelFactory(audioStreamer, sonosController, appSettings))[SonosViewModel::class.java]
+        ViewModelProvider(this, SonosViewModelFactory(audioStreamer, sonosController, appSettings, sonosDiscovery.devices))[SonosViewModel::class.java]
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -133,12 +141,13 @@ class MainActivity : ComponentActivity() {
 class SonosViewModelFactory(
     private val audioStreamer: AudioStreamer,
     private val sonosController: SonosController,
-    private val appSettings: AppSettings
+    private val appSettings: AppSettings,
+    private val discoveredDevices: StateFlow<List<SonosDevice>>
 ) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(SonosViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")
-            return SonosViewModel(audioStreamer, sonosController, appSettings) as T
+            return SonosViewModel(audioStreamer, sonosController, appSettings, discoveredDevices) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }
@@ -147,10 +156,14 @@ class SonosViewModelFactory(
 class SonosViewModel(
     private val audioStreamer: AudioStreamer,
     private val sonosController: SonosController,
-    private val appSettings: AppSettings
+    private val appSettings: AppSettings,
+    private val discoveredDevices: StateFlow<List<SonosDevice>>
 ) : ViewModel() {
     private val _selectedDevices = MutableStateFlow<Set<SonosDevice>>(emptySet())
     val selectedDevices: StateFlow<Set<SonosDevice>> = _selectedDevices.asStateFlow()
+    
+    private val _devicesWithNowPlaying = MutableStateFlow<List<SonosDevice>>(emptyList())
+    val devicesWithNowPlaying: StateFlow<List<SonosDevice>> = _devicesWithNowPlaying.asStateFlow()
 
     private val _isRecording = MutableStateFlow(false)
     val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
@@ -190,6 +203,65 @@ class SonosViewModel(
     init {
         // Sync initial amplification to AudioStreamer
         audioStreamer.setAmplification(appSettings.amplification.value)
+        
+        // Initialize with discovered devices (only once)
+        viewModelScope.launch {
+            discoveredDevices.collect { devices ->
+                Log.d("SonosViewModel", "Discovered ${devices.size} devices")
+                // Only update if the device list actually changed
+                val currentIps = _devicesWithNowPlaying.value.map { it.ipAddress }.toSet()
+                val newIps = devices.map { it.ipAddress }.toSet()
+                
+                if (currentIps != newIps) {
+                    // Device list changed, update it (preserving now playing info for existing ones)
+                    val mapped = devices.map { newDevice ->
+                        val existing = _devicesWithNowPlaying.value.find { it.ipAddress == newDevice.ipAddress }
+                        if (existing != null) {
+                            // Preserve existing now playing info
+                            Log.d("SonosViewModel", "Preserving now playing for ${newDevice.name}: '${existing.nowPlayingInfo.title}'")
+                            newDevice.copy(nowPlayingInfo = existing.nowPlayingInfo)
+                        } else {
+                            Log.d("SonosViewModel", "New device: ${newDevice.name}")
+                            newDevice
+                        }
+                    }
+                    Log.d("SonosViewModel", "Device list changed, updating _devicesWithNowPlaying with ${mapped.size} devices")
+                    _devicesWithNowPlaying.value = mapped
+                } else {
+                    Log.d("SonosViewModel", "Device list unchanged, not updating")
+                }
+            }
+        }
+        
+        // Separate coroutine for periodic refreshing of now playing info
+        viewModelScope.launch {
+            while (true) {
+                try {
+                    val currentDevices = _devicesWithNowPlaying.value
+                    if (currentDevices.isNotEmpty()) {
+                        Log.d("SonosViewModel", "Refreshing now playing for ${currentDevices.size} devices")
+                        
+                        val updatedDevices = mutableListOf<SonosDevice>()
+                        currentDevices.forEach { device ->
+                            try {
+                                val info = sonosController.getNowPlaying(device)
+                                Log.d("SonosViewModel", "Got now playing for ${device.name}: '${info.title}'")
+                                updatedDevices.add(device.copy(nowPlayingInfo = info))
+                            } catch (e: Exception) {
+                                Log.e("SonosViewModel", "Failed to get now playing for ${device.name}", e)
+                                updatedDevices.add(device)
+                            }
+                        }
+                        
+                        Log.d("SonosViewModel", "Setting _devicesWithNowPlaying to ${updatedDevices.size} devices with updated info: ${updatedDevices.map { it.nowPlayingInfo.title }}")
+                        _devicesWithNowPlaying.value = updatedDevices.toList()
+                    }
+                } catch (e: Exception) {
+                    Log.e("SonosViewModel", "Error in now playing refresh loop", e)
+                }
+                kotlinx.coroutines.delay(3000) // Refresh every 3 seconds
+            }
+        }
     }
 
     fun toggleDeviceSelection(device: SonosDevice) {
@@ -566,7 +638,7 @@ fun SonosScreen(
     devicesFlow: StateFlow<List<SonosDevice>>,
     viewModel: SonosViewModel
 ) {
-    val devices by devicesFlow.collectAsState()
+    val devices by viewModel.devicesWithNowPlaying.collectAsState()
     val selectedDevices by viewModel.selectedDevices.collectAsState()
     val isRecording by viewModel.isRecording.collectAsState()
     val isTesting by viewModel.isTesting.collectAsState()
@@ -579,6 +651,13 @@ fun SonosScreen(
     var showSettings by remember { mutableStateOf(false) }
     var showGainSlider by remember { mutableStateOf(false) }
     val sheetState = rememberModalBottomSheetState()
+    
+    LaunchedEffect(devices) {
+        Log.d("SonosScreen", "devices updated: ${devices.size} devices")
+        devices.forEach { device ->
+            Log.d("SonosScreen", "  - ${device.name}: title='${device.nowPlayingInfo.title}', artwork='${device.nowPlayingInfo.artworkUrl}'")
+        }
+    }
 
     LaunchedEffect(errorMessage) {
         errorMessage?.let {
@@ -695,18 +774,145 @@ fun DeviceList(
     LazyColumn(modifier = modifier.padding(horizontal = 8.dp)) {
         items(devices) { device ->
             val isSelected = device in selectedDevices
-            ListItem(
-                headlineContent = { Text(text = device.name) },
-                leadingContent = {
-                    Checkbox(
-                        checked = isSelected,
-                        onCheckedChange = null
-                    )
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { onDeviceSelectionChanged(device) }
+            DeviceCard(
+                device = device,
+                isSelected = isSelected,
+                onSelectionChanged = { onDeviceSelectionChanged(device) }
             )
+        }
+    }
+}
+
+@Composable
+fun DeviceCard(
+    device: SonosDevice,
+    isSelected: Boolean,
+    onSelectionChanged: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val backgroundColor = if (isSelected) {
+        MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant
+    }
+
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp)
+            .clickable { onSelectionChanged() },
+        colors = CardDefaults.cardColors(
+            containerColor = backgroundColor
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp)
+        ) {
+            // Device name and checkbox
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = device.name,
+                    style = MaterialTheme.typography.headlineSmall,
+                    modifier = Modifier.weight(1f)
+                )
+                Checkbox(
+                    checked = isSelected,
+                    onCheckedChange = null
+                )
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Debug: show if we have title data
+            if (device.nowPlayingInfo.title.isEmpty()) {
+                Text(
+                    text = "No track info (title is empty)",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    // Album art
+                    if (device.nowPlayingInfo.artworkUrl.isNotEmpty()) {
+                        Log.d("DeviceCard", "Loading artwork from: ${device.nowPlayingInfo.artworkUrl}")
+                        coil.compose.AsyncImage(
+                            model = device.nowPlayingInfo.artworkUrl,
+                            contentDescription = "Album art",
+                            modifier = Modifier
+                                .size(60.dp)
+                                .clip(MaterialTheme.shapes.small),
+                            contentScale = ContentScale.Crop,
+                            onState = { state ->
+                                when (state) {
+                                    is AsyncImagePainter.State.Loading -> {
+                                        Log.d("DeviceCard", "Loading artwork for ${device.name}")
+                                    }
+                                    is AsyncImagePainter.State.Success -> {
+                                        Log.d("DeviceCard", "Successfully loaded artwork for ${device.name}")
+                                    }
+                                    is AsyncImagePainter.State.Error -> {
+                                        Log.e("DeviceCard", "Failed to load artwork for ${device.name}: ${state.result.throwable.message}")
+                                    }
+                                    else -> {}
+                                }
+                            }
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .size(60.dp)
+                                .background(
+                                    MaterialTheme.colorScheme.surfaceVariant,
+                                    MaterialTheme.shapes.small
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.MusicNote,
+                                contentDescription = "Music",
+                                modifier = Modifier.size(32.dp)
+                            )
+                        }
+                    }
+
+                    // Track info
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = device.nowPlayingInfo.title,
+                            style = MaterialTheme.typography.bodyLarge,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (device.nowPlayingInfo.artist.isNotEmpty() || device.nowPlayingInfo.album.isNotEmpty()) {
+                            Text(
+                                text = buildString {
+                                    if (device.nowPlayingInfo.artist.isNotEmpty()) {
+                                        append(device.nowPlayingInfo.artist)
+                                    }
+                                    if (device.nowPlayingInfo.album.isNotEmpty()) {
+                                        if (isNotEmpty()) append(" - ")
+                                        append(device.nowPlayingInfo.album)
+                                    }
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }

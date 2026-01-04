@@ -26,6 +26,7 @@ class SonosController(private val context: Context) {
     }
     
     private val audioClip = SonosAudioClip()
+    private val nowPlaying = SonosNowPlaying()
 
     suspend fun play(device: SonosDevice, streamUrl: String, title: String = "Live Microphone", forceRadio: Boolean = true) {
         val url = "http://${device.ipAddress}:${device.port}/MediaRenderer/AVTransport/Control"
@@ -299,6 +300,13 @@ class SonosController(private val context: Context) {
      */
     suspend fun supportsAnnouncement(device: SonosDevice): Boolean {
         return audioClip.supportsAudioClip(device)
+    }
+    
+    /**
+     * Get currently playing track information from the device.
+     */
+    suspend fun getNowPlaying(device: SonosDevice): NowPlayingInfo {
+        return nowPlaying.getNowPlaying(device)
     }
 
     suspend fun stop(device: SonosDevice) {

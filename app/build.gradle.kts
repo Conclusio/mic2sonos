@@ -66,6 +66,9 @@ dependencies {
 
     // SLF4J logging
     implementation("org.slf4j:slf4j-nop:2.0.12")
+    
+    // Image loading
+    implementation("io.coil-kt:coil-compose:2.6.0")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
