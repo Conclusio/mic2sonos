@@ -129,7 +129,8 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.padding(innerPadding),
                         devicesFlow = sonosDiscovery.devices,
                         viewModel = viewModel,
-                        onAddDummyDevices = { sonosDiscovery.addDummyDevices() }
+                        onAddDummyDevices = { sonosDiscovery.addDummyDevices() },
+                        onRefreshDiscovery = { refreshDiscovery() }
                     )
                 }
             }
@@ -144,6 +145,10 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         super.onPause()
         sonosDiscovery.stopDiscovery()
+    }
+    
+    fun refreshDiscovery() {
+        sonosDiscovery.restartDiscovery()
     }
 }
 
@@ -652,30 +657,7 @@ class SonosViewModel(
     fun clearError() {
         _errorMessage.value = null
     }
-    
-    fun refreshDiscovery() {
-        viewModelScope.launch {
-            Log.d("SonosViewModel", "Manual discovery refresh triggered")
-            discoveredDevices.collect { devices ->
-                Log.d("SonosViewModel", "Refreshed ${devices.size} devices")
-                val currentIps = _devicesWithNowPlaying.value.map { it.ipAddress }.toSet()
-                val newIps = devices.map { it.ipAddress }.toSet()
-                
-                if (currentIps != newIps) {
-                    val mapped = devices.map { newDevice ->
-                        val existing = _devicesWithNowPlaying.value.find { it.ipAddress == newDevice.ipAddress }
-                        if (existing != null) {
-                            newDevice.copy(nowPlayingInfo = existing.nowPlayingInfo)
-                        } else {
-                            newDevice
-                        }
-                    }
-                    _devicesWithNowPlaying.value = mapped
-                }
-                return@collect
-            }
-        }
-    }
+
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -684,7 +666,8 @@ fun SonosScreen(
     modifier: Modifier = Modifier,
     devicesFlow: StateFlow<List<SonosDevice>>,
     viewModel: SonosViewModel,
-    onAddDummyDevices: () -> Unit = {}
+    onAddDummyDevices: () -> Unit = {},
+    onRefreshDiscovery: () -> Unit = {}
 ) {
     val devices by viewModel.devicesWithNowPlaying.collectAsState()
     val selectedDevices by viewModel.selectedDevices.collectAsState()
@@ -753,7 +736,7 @@ fun SonosScreen(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     modifier = Modifier.weight(1f)
                 ) {
-                    IconButton(onClick = { viewModel.refreshDiscovery() }, modifier = Modifier.size(40.dp)) {
+                    IconButton(onClick = { onRefreshDiscovery() }, modifier = Modifier.size(40.dp)) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh device discovery")
                     }
                     if (devices.isEmpty()) {

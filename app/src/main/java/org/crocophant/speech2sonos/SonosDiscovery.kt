@@ -119,6 +119,17 @@ class SonosDiscovery(private val context: Context) {
         }
     }
     
+    fun restartDiscovery() {
+        Log.d(TAG, "Restarting discovery")
+        stopDiscovery()
+        try {
+            Thread.sleep(100)
+        } catch (e: InterruptedException) {
+            Log.w(TAG, "Interrupted during restart delay")
+        }
+        startDiscovery()
+    }
+    
     fun addDummyDevices() {
         Log.d(TAG, "Adding dummy devices for testing")
         val currentDevices = _devices.value
