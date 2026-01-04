@@ -35,6 +35,8 @@ import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Checkbox
+import androidx.compose.foundation.basicMarquee
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
@@ -783,6 +785,7 @@ fun DeviceList(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun DeviceCard(
     device: SonosDevice,
@@ -829,12 +832,11 @@ fun DeviceCard(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            // Debug: show if we have title data
             if (device.nowPlayingInfo.title.isEmpty()) {
                 Text(
-                    text = "No track info (title is empty)",
+                    text = "Fetching track information...",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             } else {
                 Row(
@@ -891,7 +893,8 @@ fun DeviceCard(
                             text = device.nowPlayingInfo.title,
                             style = MaterialTheme.typography.bodyLarge,
                             maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE)
                         )
                         if (device.nowPlayingInfo.artist.isNotEmpty() || device.nowPlayingInfo.album.isNotEmpty()) {
                             Text(
@@ -907,7 +910,8 @@ fun DeviceCard(
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE)
                             )
                         }
                     }
