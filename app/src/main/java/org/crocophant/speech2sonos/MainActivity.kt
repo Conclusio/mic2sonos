@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Notes
 import androidx.compose.material3.Checkbox
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -62,6 +63,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -73,6 +75,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import android.content.Intent
+import android.net.Uri
 import coil.compose.AsyncImagePainter
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -723,7 +727,8 @@ fun SonosScreen(
                 devices = devices,
                 selectedDevices = selectedDevices,
                 onDeviceSelectionChanged = { device -> viewModel.toggleDeviceSelection(device) },
-                modifier = Modifier.weight(0.6f)
+                modifier = Modifier.weight(0.6f),
+                context = LocalContext.current
             )
 
             // Waveform with tap-to-show gain slider
@@ -771,7 +776,8 @@ fun DeviceList(
     devices: List<SonosDevice>,
     selectedDevices: Set<SonosDevice>,
     onDeviceSelectionChanged: (SonosDevice) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    context: android.content.Context? = null
 ) {
     LazyColumn(modifier = modifier.padding(horizontal = 8.dp)) {
         items(devices) { device ->
@@ -779,7 +785,8 @@ fun DeviceList(
             DeviceCard(
                 device = device,
                 isSelected = isSelected,
-                onSelectionChanged = { onDeviceSelectionChanged(device) }
+                onSelectionChanged = { onDeviceSelectionChanged(device) },
+                context = context
             )
         }
     }
@@ -791,7 +798,8 @@ fun DeviceCard(
     device: SonosDevice,
     isSelected: Boolean,
     onSelectionChanged: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    context: android.content.Context? = null
 ) {
     val backgroundColor = if (isSelected) {
         MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)
@@ -824,6 +832,7 @@ fun DeviceCard(
                     style = MaterialTheme.typography.headlineSmall,
                     modifier = Modifier.weight(1f)
                 )
+                
                 Checkbox(
                     checked = isSelected,
                     onCheckedChange = null
@@ -899,6 +908,28 @@ fun DeviceCard(
                                 modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE)
                             )
                         }
+                    }
+                    
+                    // Lyrics button
+                    IconButton(
+                        onClick = {
+                            if (context != null) {
+                                // Remove text after dash (e.g., "- 2008 Remaster")
+                                val cleanTitle = device.nowPlayingInfo.title.split(" - ").first().trim()
+                                val query = "${device.nowPlayingInfo.artist} $cleanTitle".trim()
+                                Log.d("DeviceCard", "Searching Genius for: $query")
+                                val geniusUrl = "https://genius.com/search?q=${java.net.URLEncoder.encode(query, "UTF-8")}"
+                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(geniusUrl))
+                                context.startActivity(intent)
+                            }
+                        },
+                        modifier = Modifier.size(40.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Notes,
+                            contentDescription = "View lyrics",
+                            modifier = Modifier.size(20.dp)
+                        )
                     }
                 }
             }
