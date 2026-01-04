@@ -103,7 +103,7 @@ class MainActivity : ComponentActivity() {
         }
 
     private val viewModel: SonosViewModel by lazy {
-        ViewModelProvider(this, SonosViewModelFactory(audioStreamer, sonosController, appSettings, sonosDiscovery.devices))[SonosViewModel::class.java]
+        ViewModelProvider(this, SonosViewModelFactory(audioStreamer, sonosController, appSettings, sonosDiscovery.devices, this))[SonosViewModel::class.java]
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -156,12 +156,13 @@ class SonosViewModelFactory(
     private val audioStreamer: AudioStreamer,
     private val sonosController: SonosController,
     private val appSettings: AppSettings,
-    private val discoveredDevices: StateFlow<List<SonosDevice>>
+    private val discoveredDevices: StateFlow<List<SonosDevice>>,
+    private val context: android.content.Context
 ) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(SonosViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")
-            return SonosViewModel(audioStreamer, sonosController, appSettings, discoveredDevices) as T
+            return SonosViewModel(audioStreamer, sonosController, appSettings, discoveredDevices, context) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }
@@ -171,7 +172,8 @@ class SonosViewModel(
     private val audioStreamer: AudioStreamer,
     private val sonosController: SonosController,
     private val appSettings: AppSettings,
-    private val discoveredDevices: StateFlow<List<SonosDevice>>
+    private val discoveredDevices: StateFlow<List<SonosDevice>>,
+    private val context: android.content.Context
 ) : ViewModel() {
     private val _selectedDevices = MutableStateFlow<Set<SonosDevice>>(emptySet())
     val selectedDevices: StateFlow<Set<SonosDevice>> = _selectedDevices.asStateFlow()
@@ -197,8 +199,62 @@ class SonosViewModel(
     var permissionGranted by mutableStateOf(false)
         private set
 
+    private lateinit var eventSubscription: SonosEventSubscription
+    private val subscribedDevices = mutableSetOf<String>() // IP addresses
+    private var useEventSubscriptions = false
+    private val POLLING_INTERVAL = 3000L // 3 seconds fallback
+
     fun onPermissionGranted() {
         permissionGranted = true
+    }
+
+    private fun initializeEventSubscriptions() {
+        try {
+            eventSubscription = SonosEventSubscription(context) { device, newInfo ->
+                Log.d("SonosViewModel", "Event callback: Track changed on ${device.name}")
+                val updated = _devicesWithNowPlaying.value.map { d ->
+                    if (d.ipAddress == device.ipAddress) {
+                        d.copy(nowPlayingInfo = newInfo)
+                    } else {
+                        d
+                    }
+                }
+                _devicesWithNowPlaying.value = updated
+            }
+            
+            // Try to start event server
+            if (eventSubscription.startEventServer()) {
+                useEventSubscriptions = true
+                Log.d("SonosViewModel", "Event subscriptions initialized successfully")
+                startSubscribingToDevices()
+            } else {
+                Log.w("SonosViewModel", "Failed to start event server, will use polling")
+                useEventSubscriptions = false
+            }
+        } catch (e: Exception) {
+            Log.e("SonosViewModel", "Failed to initialize event subscriptions", e)
+            useEventSubscriptions = false
+        }
+    }
+
+    private fun startSubscribingToDevices() {
+        viewModelScope.launch {
+            // Subscribe to currently discovered devices
+            _devicesWithNowPlaying.collect { devices ->
+                for (device in devices) {
+                    if (device.ipAddress !in subscribedDevices) {
+                        Log.d("SonosViewModel", "Attempting subscription to ${device.name}")
+                        val success = eventSubscription.subscribeToDevice(device)
+                        if (success) {
+                            subscribedDevices.add(device.ipAddress)
+                            Log.d("SonosViewModel", "Subscribed to ${device.name}")
+                        } else {
+                            Log.w("SonosViewModel", "Failed to subscribe to ${device.name}, will use polling for this device")
+                        }
+                    }
+                }
+            }
+        }
     }
     
     fun setAmplification(value: Int) {
@@ -217,6 +273,9 @@ class SonosViewModel(
     init {
         // Sync initial amplification to AudioStreamer
         audioStreamer.setAmplification(appSettings.amplification.value)
+        
+        // Initialize event subscriptions (try callback approach first)
+        initializeEventSubscriptions()
         
         // Initialize with discovered devices (only once)
         viewModelScope.launch {
@@ -257,34 +316,53 @@ class SonosViewModel(
             }
         }
         
-        // Separate coroutine for periodic refreshing of now playing info
+        // Polling as fallback - only poll devices that don't have event subscriptions
         viewModelScope.launch {
             while (true) {
                 try {
                     val currentDevices = _devicesWithNowPlaying.value
                     if (currentDevices.isNotEmpty()) {
-                        Log.d("SonosViewModel", "Refreshing now playing for ${currentDevices.size} devices")
-                        
-                        val updatedDevices = mutableListOf<SonosDevice>()
-                        currentDevices.forEach { device ->
-                            try {
-                                val info = sonosController.getNowPlaying(device)
-                                Log.d("SonosViewModel", "Got now playing for ${device.name}: '${info.title}'")
-                                updatedDevices.add(device.copy(nowPlayingInfo = info))
-                            } catch (e: Exception) {
-                                Log.e("SonosViewModel", "Failed to get now playing for ${device.name}", e)
-                                updatedDevices.add(device)
-                            }
+                        // Only poll devices that are NOT subscribed to events
+                        val devicesToPoll = currentDevices.filter { 
+                            it.ipAddress !in subscribedDevices 
                         }
                         
-                        Log.d("SonosViewModel", "Setting _devicesWithNowPlaying to ${updatedDevices.size} devices with updated info: ${updatedDevices.map { it.nowPlayingInfo.title }}")
-                        _devicesWithNowPlaying.value = updatedDevices.toList()
+                        if (devicesToPoll.isNotEmpty()) {
+                            Log.d("SonosViewModel", "Polling ${devicesToPoll.size} unsubscribed devices (${currentDevices.size - devicesToPoll.size} via events)")
+                            
+                            val updatedDevices = mutableListOf<SonosDevice>()
+                            currentDevices.forEach { device ->
+                                if (device.ipAddress in subscribedDevices) {
+                                    // This device uses event subscriptions, don't poll it
+                                    updatedDevices.add(device)
+                                } else {
+                                    // Fallback polling for devices without subscriptions
+                                    try {
+                                        val info = sonosController.getNowPlaying(device)
+                                        Log.v("SonosViewModel", "Polled now playing for ${device.name}: '${info.title}'")
+                                        updatedDevices.add(device.copy(nowPlayingInfo = info))
+                                    } catch (e: Exception) {
+                                        Log.e("SonosViewModel", "Failed to poll ${device.name}", e)
+                                        updatedDevices.add(device)
+                                    }
+                                }
+                            }
+                            
+                            _devicesWithNowPlaying.value = updatedDevices.toList()
+                        }
                     }
                 } catch (e: Exception) {
-                    Log.e("SonosViewModel", "Error in now playing refresh loop", e)
+                    Log.e("SonosViewModel", "Error in polling loop", e)
                 }
-                kotlinx.coroutines.delay(3000) // Refresh every 3 seconds
+                kotlinx.coroutines.delay(POLLING_INTERVAL)
             }
+        }
+    }
+    
+    override fun onCleared() {
+        super.onCleared()
+        if (::eventSubscription.isInitialized) {
+            eventSubscription.cleanup()
         }
     }
 
