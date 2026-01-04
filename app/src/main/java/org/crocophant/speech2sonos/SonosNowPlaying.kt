@@ -33,21 +33,10 @@ class SonosNowPlaying {
 
     suspend fun getNowPlaying(device: SonosDevice): NowPlayingInfo = withContext(Dispatchers.IO) {
         try {
-            Log.d(TAG, "Getting now playing info for ${device.name} at ${device.ipAddress}")
             // Get position info which contains metadata
             val positionInfo = getPositionInfo(device)
-            Log.d(TAG, "Position info response length: ${positionInfo.length}")
-            if (positionInfo.length > 500) {
-                Log.d(TAG, "Position info: ${positionInfo.take(500)}...")
-            } else {
-                Log.d(TAG, "Position info: $positionInfo")
-            }
-
             // Parse the metadata from the response
-            val metadata = parseMetadata(positionInfo, device)
-            Log.d(TAG, "Parsed metadata: title=${metadata.title}, artist=${metadata.artist}, artwork=${metadata.artworkUrl}")
-            
-            metadata
+            parseMetadata(positionInfo, device)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to get now playing info for ${device.name}", e)
             NowPlayingInfo()
@@ -56,7 +45,6 @@ class SonosNowPlaying {
 
     private suspend fun getPositionInfo(device: SonosDevice): String {
         val url = "http://${device.ipAddress}:${device.port}/MediaRenderer/AVTransport/Control"
-        Log.d(TAG, "Calling GetPositionInfo on $url")
         val body = """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
     <s:Body>
         <u:GetPositionInfo xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
@@ -71,7 +59,6 @@ class SonosNowPlaying {
                 contentType(ContentType.Text.Xml)
                 setBody(body)
             }
-            Log.d(TAG, "GetPositionInfo response status: ${response.status}")
             response.bodyAsText()
         } catch (e: Exception) {
             Log.e(TAG, "Failed to get position info from ${device.name}", e)
@@ -84,16 +71,13 @@ class SonosNowPlaying {
             // Extract TrackMetaData using regex first
             val metadataMatch = Regex("<TrackMetaData>(.*?)</TrackMetaData>", RegexOption.DOT_MATCHES_ALL).find(responseBody)
             if (metadataMatch == null) {
-                Log.d(TAG, "No TrackMetaData found in response")
                 return NowPlayingInfo()
             }
 
             var metadataXml = metadataMatch.groupValues[1]
-            Log.d(TAG, "Extracted metadata XML (raw, first 200 chars): ${metadataXml.take(200)}")
 
             // HTML decode the metadata - it comes XML-escaped in the SOAP response
             metadataXml = decodeHtmlEntities(metadataXml)
-            Log.d(TAG, "Decoded metadata XML (first 200 chars): ${metadataXml.take(200)}")
 
             // Parse the DIDL-Lite XML
             val docFactory = DocumentBuilderFactory.newInstance()
@@ -103,7 +87,6 @@ class SonosNowPlaying {
 
             val itemElement = doc.getElementsByTagName("item").item(0) as? Element
             if (itemElement == null) {
-                Log.d(TAG, "No item element found in metadata")
                 return NowPlayingInfo()
             }
 
@@ -112,12 +95,9 @@ class SonosNowPlaying {
             val album = itemElement.getElementsByTagName("upnp:album").item(0)?.textContent ?: ""
             var albumArtUri = itemElement.getElementsByTagName("upnp:albumArtURI").item(0)?.textContent ?: ""
 
-            Log.d(TAG, "Parsed: title=$title, artist=$artist, album=$album, albumArtUri=$albumArtUri")
-
             // Convert relative URL to absolute if needed
             if (albumArtUri.isNotEmpty() && !albumArtUri.startsWith("http")) {
                 albumArtUri = "http://${device.ipAddress}:${device.port}$albumArtUri"
-                Log.d(TAG, "Converted to absolute URL: $albumArtUri")
             }
 
             return NowPlayingInfo(

@@ -846,28 +846,13 @@ fun DeviceCard(
                 ) {
                     // Album art
                     if (device.nowPlayingInfo.artworkUrl.isNotEmpty()) {
-                        Log.d("DeviceCard", "Loading artwork from: ${device.nowPlayingInfo.artworkUrl}")
                         coil.compose.AsyncImage(
                             model = device.nowPlayingInfo.artworkUrl,
                             contentDescription = "Album art",
                             modifier = Modifier
                                 .size(60.dp)
                                 .clip(MaterialTheme.shapes.small),
-                            contentScale = ContentScale.Crop,
-                            onState = { state ->
-                                when (state) {
-                                    is AsyncImagePainter.State.Loading -> {
-                                        Log.d("DeviceCard", "Loading artwork for ${device.name}")
-                                    }
-                                    is AsyncImagePainter.State.Success -> {
-                                        Log.d("DeviceCard", "Successfully loaded artwork for ${device.name}")
-                                    }
-                                    is AsyncImagePainter.State.Error -> {
-                                        Log.e("DeviceCard", "Failed to load artwork for ${device.name}: ${state.result.throwable.message}")
-                                    }
-                                    else -> {}
-                                }
-                            }
+                            contentScale = ContentScale.Crop
                         )
                     } else {
                         Box(
