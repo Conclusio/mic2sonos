@@ -35,7 +35,9 @@ import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Notes
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.Divider
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -126,7 +128,8 @@ class MainActivity : ComponentActivity() {
                     SonosScreen(
                         modifier = Modifier.padding(innerPadding),
                         devicesFlow = sonosDiscovery.devices,
-                        viewModel = viewModel
+                        viewModel = viewModel,
+                        onAddDummyDevices = { sonosDiscovery.addDummyDevices() }
                     )
                 }
             }
@@ -233,6 +236,16 @@ class SonosViewModel(
                     }
                     Log.d("SonosViewModel", "Device list changed, updating _devicesWithNowPlaying with ${mapped.size} devices")
                     _devicesWithNowPlaying.value = mapped
+                    
+                    // Auto-select devices that were previously selected (if they're now discovered)
+                    val savedIps = appSettings.getSelectedDeviceIPs()
+                    if (savedIps.isNotEmpty()) {
+                        val devicesToSelect = mapped.filter { it.ipAddress in savedIps }.toSet()
+                        if (devicesToSelect.isNotEmpty()) {
+                            Log.d("SonosViewModel", "Restoring ${devicesToSelect.size} previously selected devices")
+                            _selectedDevices.value = devicesToSelect
+                        }
+                    }
                 } else {
                     Log.d("SonosViewModel", "Device list unchanged, not updating")
                 }
@@ -272,12 +285,16 @@ class SonosViewModel(
 
     fun toggleDeviceSelection(device: SonosDevice) {
         val currentSelection = _selectedDevices.value.toMutableSet()
-        if (device in currentSelection) {
-            currentSelection.remove(device)
+        // Check by IP address since device objects may differ
+        val existingDevice = currentSelection.find { it.ipAddress == device.ipAddress }
+        if (existingDevice != null) {
+            currentSelection.remove(existingDevice)
         } else {
             currentSelection.add(device)
         }
         _selectedDevices.value = currentSelection
+        // Save selected device IPs to preferences
+        appSettings.saveSelectedDeviceIPs(currentSelection.map { it.ipAddress }.toSet())
     }
 
     fun toggleRecording() {
@@ -635,6 +652,30 @@ class SonosViewModel(
     fun clearError() {
         _errorMessage.value = null
     }
+    
+    fun refreshDiscovery() {
+        viewModelScope.launch {
+            Log.d("SonosViewModel", "Manual discovery refresh triggered")
+            discoveredDevices.collect { devices ->
+                Log.d("SonosViewModel", "Refreshed ${devices.size} devices")
+                val currentIps = _devicesWithNowPlaying.value.map { it.ipAddress }.toSet()
+                val newIps = devices.map { it.ipAddress }.toSet()
+                
+                if (currentIps != newIps) {
+                    val mapped = devices.map { newDevice ->
+                        val existing = _devicesWithNowPlaying.value.find { it.ipAddress == newDevice.ipAddress }
+                        if (existing != null) {
+                            newDevice.copy(nowPlayingInfo = existing.nowPlayingInfo)
+                        } else {
+                            newDevice
+                        }
+                    }
+                    _devicesWithNowPlaying.value = mapped
+                }
+                return@collect
+            }
+        }
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -642,7 +683,8 @@ class SonosViewModel(
 fun SonosScreen(
     modifier: Modifier = Modifier,
     devicesFlow: StateFlow<List<SonosDevice>>,
-    viewModel: SonosViewModel
+    viewModel: SonosViewModel,
+    onAddDummyDevices: () -> Unit = {}
 ) {
     val devices by viewModel.devicesWithNowPlaying.collectAsState()
     val selectedDevices by viewModel.selectedDevices.collectAsState()
@@ -683,7 +725,8 @@ fun SonosScreen(
                 announcementVolume = announcementVolume,
                 onAmplificationChange = { viewModel.setAmplification(it) },
                 onAnnouncementModeChange = { viewModel.setAnnouncementMode(it) },
-                onAnnouncementVolumeChange = { viewModel.setAnnouncementVolume(it) }
+                onAnnouncementVolumeChange = { viewModel.setAnnouncementVolume(it) },
+                onAddDummyDevices = onAddDummyDevices
             )
         }
     }
@@ -705,18 +748,27 @@ fun SonosScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                if (devices.isEmpty()) {
-                    Text(
-                        text = "Searching for Sonos devices...",
-                        modifier = Modifier.padding(8.dp),
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                } else {
-                    Text(
-                        text = "${devices.size} device${if (devices.size != 1) "s" else ""} found",
-                        modifier = Modifier.padding(8.dp),
-                        style = MaterialTheme.typography.bodyMedium
-                    )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    IconButton(onClick = { viewModel.refreshDiscovery() }, modifier = Modifier.size(40.dp)) {
+                        Icon(Icons.Default.Refresh, contentDescription = "Refresh device discovery")
+                    }
+                    if (devices.isEmpty()) {
+                        Text(
+                            text = "Searching for Sonos devices...",
+                            modifier = Modifier.padding(8.dp),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    } else {
+                        Text(
+                            text = "${devices.size} device${if (devices.size != 1) "s" else ""} found",
+                            modifier = Modifier.padding(8.dp),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
                 }
                 IconButton(onClick = { showSettings = true }) {
                     Icon(Icons.Default.Settings, contentDescription = "Settings")
@@ -727,21 +779,35 @@ fun SonosScreen(
                 devices = devices,
                 selectedDevices = selectedDevices,
                 onDeviceSelectionChanged = { device -> viewModel.toggleDeviceSelection(device) },
-                modifier = Modifier.weight(0.6f),
+                modifier = Modifier.weight(1f),
                 context = LocalContext.current
             )
+
+            // Inset divider with vertical spacing
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 12.dp)
+            ) {
+                Divider(
+                    modifier = Modifier
+                        .fillMaxWidth(0.9f)
+                        .align(Alignment.Center)
+                )
+            }
 
             // Waveform with tap-to-show gain slider
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(0.6f)
+                    .height(100.dp)
                     .padding(horizontal = 16.dp)
                     .clickable { showGainSlider = !showGainSlider }
             ) {
                 AudioWaveformVisualizer(
                     waveformData = waveformData,
                     isRecording = isRecording,
+                    showDeviceSelectionHint = selectedDevices.isEmpty(),
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -764,7 +830,7 @@ fun SonosScreen(
             BottomControls(
                 isRecording = isRecording,
                 onToggleRecording = { viewModel.toggleRecording() },
-                enabled = viewModel.permissionGranted,
+                enabled = viewModel.permissionGranted && selectedDevices.isNotEmpty(),
                 modifier = Modifier.padding(bottom = 24.dp)
             )
         }
@@ -781,7 +847,8 @@ fun DeviceList(
 ) {
     LazyColumn(modifier = modifier.padding(horizontal = 8.dp)) {
         items(devices) { device ->
-            val isSelected = device in selectedDevices
+            // Check if selected by IP address (more stable than object equality)
+            val isSelected = selectedDevices.any { it.ipAddress == device.ipAddress }
             DeviceCard(
                 device = device,
                 isSelected = isSelected,
@@ -941,6 +1008,7 @@ fun DeviceCard(
 fun AudioWaveformVisualizer(
     waveformData: List<Float>,
     isRecording: Boolean,
+    showDeviceSelectionHint: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val primaryColor = MaterialTheme.colorScheme.primary
@@ -957,11 +1025,41 @@ fun AudioWaveformVisualizer(
         contentAlignment = Alignment.Center
     ) {
         if (!isRecording || waveformData.isEmpty()) {
-            Text(
-                text = if (isRecording) "Waiting for audio..." else "Press record to start",
-                style = MaterialTheme.typography.bodyMedium,
-                color = onSurfaceVariant
-            )
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+                modifier = Modifier.fillMaxSize()
+            ) {
+                if (showDeviceSelectionHint) {
+                    Text(
+                        text = "Select a device first",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 12.dp)
+                    )
+                }
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (isRecording) "Waiting for audio..." else "Press",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = onSurfaceVariant
+                    )
+                    Icon(
+                        imageVector = Icons.Default.Mic,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                        tint = onSurfaceVariant
+                    )
+                    Text(
+                        text = "to start",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = onSurfaceVariant
+                    )
+                }
+            }
         } else {
             Canvas(modifier = Modifier.fillMaxSize().padding(12.dp)) {
                 val barCount = waveformData.size
@@ -1024,7 +1122,8 @@ fun SettingsContent(
     announcementVolume: Int,
     onAmplificationChange: (Int) -> Unit,
     onAnnouncementModeChange: (Boolean) -> Unit,
-    onAnnouncementVolumeChange: (Int) -> Unit
+    onAnnouncementVolumeChange: (Int) -> Unit,
+    onAddDummyDevices: () -> Unit = {}
 ) {
     Column(
         modifier = Modifier
@@ -1095,6 +1194,15 @@ fun SettingsContent(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
+         
+        Spacer(modifier = Modifier.height(24.dp))
+        
+        OutlinedButton(
+            onClick = onAddDummyDevices,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Add Dummy Devices (Testing)")
         }
         
         Spacer(modifier = Modifier.height(24.dp))

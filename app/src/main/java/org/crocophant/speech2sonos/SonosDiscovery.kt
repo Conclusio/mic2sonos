@@ -118,4 +118,21 @@ class SonosDiscovery(private val context: Context) {
             Log.e(TAG, "Failed to stop discovery", e)
         }
     }
+    
+    fun addDummyDevices() {
+        Log.d(TAG, "Adding dummy devices for testing")
+        val currentDevices = _devices.value
+        val dummyDevices = listOf(
+            SonosDevice("Living Room", "192.168.0.16", 1400),
+            SonosDevice("Bedroom", "192.168.0.17", 1400),
+            SonosDevice("Kitchen", "192.168.0.18", 1400),
+            SonosDevice("Home Theater", "192.168.0.19", 1400),
+            SonosDevice("Patio", "192.168.0.20", 1400)
+        )
+        // Only add dummy devices that don't already exist
+        val newDevices = dummyDevices.filter { dummy ->
+            currentDevices.none { it.ipAddress == dummy.ipAddress }
+        }
+        _devices.value = currentDevices + newDevices
+    }
 }
