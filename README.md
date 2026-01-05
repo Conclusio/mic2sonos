@@ -26,7 +26,19 @@ Stream microphone audio to Sonos speakers on your local network.
 2. Tap **Refresh** to discover Sonos speakers
 3. Select one or more devices
 4. Tap the **microphone icon** to start streaming
-5. Use **Settings** (gear icon) to adjust amplification and enable announcement mode
+5. Use **Settings** (gear icon) to adjust amplification and select audio mode
+
+### Audio Modes
+
+**Announcement Mode (Recommended)**
+- Ducks the volume of currently playing music and plays your microphone stream on top at the specified volume level
+- Preserves your current queue and song playback
+- Recommended for most use cases
+
+**Streaming Mode**
+- Sends raw microphone audio as a direct stream to the device
+- Clears the current queue as Sonos must stop playback to play the stream
+- Requires significantly higher amplification (typically 20-40x) due to the audio level limitations of raw streaming
 
 ## Configuration
 

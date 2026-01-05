@@ -24,7 +24,7 @@ class AppSettings(context: Context) {
     val pushToTalkMode: StateFlow<Boolean> = _pushToTalkMode.asStateFlow()
     
     fun setAmplification(value: Int) {
-        val clamped = value.coerceIn(1, 20)
+        val clamped = value.coerceIn(MIN_AMPLIFICATION, MAX_AMPLIFICATION)
         _amplification.value = clamped
         prefs.edit { putInt(KEY_AMPLIFICATION, clamped) }
     }
@@ -59,5 +59,8 @@ class AppSettings(context: Context) {
         private const val KEY_ANNOUNCEMENT_VOLUME = "announcement_volume"
         private const val KEY_PUSH_TO_TALK = "push_to_talk_mode"
         private const val KEY_SELECTED_DEVICES = "selected_device_ips"
+        
+        const val MAX_AMPLIFICATION = 50
+        const val MIN_AMPLIFICATION = 1
     }
 }

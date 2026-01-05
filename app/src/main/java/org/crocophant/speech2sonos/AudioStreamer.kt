@@ -107,11 +107,11 @@ class AudioStreamer {
     private val _waveformData = MutableStateFlow<List<Float>>(emptyList())
     val waveformData: StateFlow<List<Float>> = _waveformData.asStateFlow()
     
-    // Configurable amplification (1-20x range)
+    // Configurable amplification - range defined in AppSettings
     private val _amplificationFactor = MutableStateFlow(10)
     
     fun setAmplification(factor: Int) {
-        _amplificationFactor.value = factor.coerceIn(1, 20)
+        _amplificationFactor.value = factor
     }
 
     private val sampleRate = 44100

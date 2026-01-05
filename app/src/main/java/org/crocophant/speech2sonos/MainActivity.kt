@@ -1025,8 +1025,8 @@ fun SettingsContent(
             Slider(
                 value = amplification.toFloat(),
                 onValueChange = { onAmplificationChange(it.toInt()) },
-                valueRange = 1f..20f,
-                steps = 18,
+                valueRange = AppSettings.MIN_AMPLIFICATION.toFloat()..AppSettings.MAX_AMPLIFICATION.toFloat(),
+                steps = AppSettings.MAX_AMPLIFICATION - AppSettings.MIN_AMPLIFICATION - 1,
                 modifier = Modifier.fillMaxWidth()
             )
             Text(
