@@ -36,6 +36,12 @@ import java.io.IOException
 import java.nio.channels.ClosedChannelException
 import java.util.concurrent.atomic.AtomicBoolean
 
+/**
+ * Records microphone audio and streams it via HTTP endpoints.
+ * - GET /stream.wav: Streams WAV-encoded PCM audio with configurable amplification
+ * - GET /live.m3u8: HLS playlist (segments at /live-segment-*.aac)
+ * Also provides waveform visualization for the UI.
+ */
 class AudioStreamer {
 
     companion object {
@@ -67,15 +73,11 @@ class AudioStreamer {
     private var currentSegmentStartTime = 0L
     private val hlsLock = Any()
 
-    private val _amplitudeFlow = MutableStateFlow(0f)
-    val amplitudeFlow: StateFlow<Float> = _amplitudeFlow.asStateFlow()
-
     private val _waveformData = MutableStateFlow<List<Float>>(emptyList())
     val waveformData: StateFlow<List<Float>> = _waveformData.asStateFlow()
     
     // Configurable amplification (1-20x range)
     private val _amplificationFactor = MutableStateFlow(10)
-    val amplificationFactor: StateFlow<Int> = _amplificationFactor.asStateFlow()
     
     fun setAmplification(factor: Int) {
         _amplificationFactor.value = factor.coerceIn(1, 20)
@@ -596,7 +598,6 @@ class AudioStreamer {
                     }
 
                     val amplitude = calculateAmplitude(pcmBuffer, bytesRead)
-                    _amplitudeFlow.value = amplitude
                     
                     waveformHistory.addLast(amplitude)
                     if (waveformHistory.size > WAVEFORM_SAMPLES) {
@@ -669,7 +670,6 @@ class AudioStreamer {
                 }
             }
             
-            _amplitudeFlow.value = 0f
             _waveformData.value = emptyList()
         }
     }

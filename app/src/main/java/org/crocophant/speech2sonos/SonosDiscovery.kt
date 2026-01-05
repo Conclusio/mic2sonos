@@ -14,6 +14,10 @@ data class SonosDevice(
     val nowPlayingInfo: NowPlayingInfo = NowPlayingInfo()
 )
 
+/**
+ * Discovers Sonos speakers on the local network using mDNS (NSD).
+ * Searches for _sonos._tcp services and emits discovered devices via [devices] StateFlow.
+ */
 class SonosDiscovery(private val context: Context) {
 
     companion object {
@@ -72,7 +76,7 @@ class SonosDiscovery(private val context: Context) {
             }
 
             override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
-                val hostAddress = serviceInfo.host?.hostAddress ?: return
+                val hostAddress = serviceInfo.host?.hostAddress?.takeIf { it.isNotEmpty() } ?: return
                 val rawName = serviceInfo.serviceName
                 val displayName = if (rawName.contains("@")) {
                     rawName.substringAfter("@").trim()

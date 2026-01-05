@@ -13,6 +13,10 @@ import kotlinx.coroutines.withContext
 import java.net.Inet4Address
 import java.net.NetworkInterface
 
+/**
+ * Controls Sonos device playback via SOAP commands over port 1400.
+ * Supports playing audio streams, announcements, and fetching device metadata.
+ */
 class SonosController(private val context: Context) {
 
     companion object {
@@ -296,13 +300,6 @@ class SonosController(private val context: Context) {
     }
     
     /**
-     * Check if a device supports the announcement/audioClip feature.
-     */
-    suspend fun supportsAnnouncement(device: SonosDevice): Boolean {
-        return audioClip.supportsAudioClip(device)
-    }
-    
-    /**
      * Get currently playing track information from the device.
      */
     suspend fun getNowPlaying(device: SonosDevice): NowPlayingInfo {
@@ -355,21 +352,22 @@ class SonosController(private val context: Context) {
         }
         
         try {
-            @Suppress("DEPRECATION")
             val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            @Suppress("DEPRECATION")
             val wifiInfo = wifiManager.connectionInfo
-            val ipAddress = wifiInfo.ipAddress
-            if (ipAddress != 0) {
-                val ip = String.format(
-                    "%d.%d.%d.%d",
-                    ipAddress and 0xff,
-                    ipAddress shr 8 and 0xff,
-                    ipAddress shr 16 and 0xff,
-                    ipAddress shr 24 and 0xff
-                )
-                Log.d(TAG, "Found IP address via WifiManager: $ip")
-                return ip
+            val ipAddressStr = wifiInfo.ipAddress.let { ipInt ->
+                if (ipInt != 0) {
+                    String.format(
+                        "%d.%d.%d.%d",
+                        ipInt and 0xff,
+                        ipInt shr 8 and 0xff,
+                        ipInt shr 16 and 0xff,
+                        ipInt shr 24 and 0xff
+                    )
+                } else null
+            }
+            if (ipAddressStr != null) {
+                Log.d(TAG, "Found IP address via WifiManager: $ipAddressStr")
+                return ipAddressStr
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error getting IP address via WifiManager", e)

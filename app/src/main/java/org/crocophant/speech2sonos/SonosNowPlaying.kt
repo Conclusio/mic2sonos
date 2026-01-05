@@ -123,8 +123,4 @@ class SonosNowPlaying {
         result = result.replace("&amp;", "&")  // Must be last!
         return result
     }
-
-    fun close() {
-        client.close()
-    }
 }

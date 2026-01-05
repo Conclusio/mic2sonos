@@ -353,14 +353,10 @@ class SonosAudioClip {
             Log.e(TAG, "Failed to check audioClip support", e)
             false
         }
-    }
+        }
+        }
 
-    fun close() {
-        client.close()
-    }
-}
-
-data class AudioClipResponse(
+        data class AudioClipResponse(
     val success: Boolean,
     val clipId: String? = null,
     val error: String? = null

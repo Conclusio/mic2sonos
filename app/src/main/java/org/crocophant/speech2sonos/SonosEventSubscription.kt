@@ -249,34 +249,6 @@ class SonosEventSubscription(
         }
     }
 
-    suspend fun unsubscribeFromDevice(device: SonosDevice) {
-        try {
-            val subInfo = subscriptions[device.ipAddress] ?: return
-            val subscriptionUrl = "http://${device.ipAddress}:${device.port}/MediaRenderer/AVTransport/Event"
-
-            Log.d(TAG, "Unsubscribing from ${device.name}")
-
-            val httpClient = HttpClient(ClientCIO) {
-                engine {
-                    requestTimeout = 5000
-                }
-            }
-
-            httpClient.request(subscriptionUrl) {
-                method = io.ktor.http.HttpMethod.parse("UNSUBSCRIBE")
-                header("SID", subInfo.sid)
-            }
-
-            httpClient.close()
-            subscriptions.remove(device.ipAddress)
-
-            Log.d(TAG, "Successfully unsubscribed from ${device.name}")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to unsubscribe from ${device.name}", e)
-            subscriptions.remove(device.ipAddress)
-        }
-    }
-
     fun stopEventServer() {
         try {
             eventServer?.stop()
@@ -295,9 +267,9 @@ class SonosEventSubscription(
         try {
             val wifiManager = context.getSystemService(Context.WIFI_SERVICE) as WifiManager
             val connectionInfo = wifiManager.connectionInfo
-            val ipAddress = connectionInfo.ipAddress
+            val ipAddressInt = connectionInfo.ipAddress
 
-            return if (ipAddress == 0) {
+            return if (ipAddressInt == 0) {
                 // WiFi not connected, try other interfaces
                 NetworkInterface.getNetworkInterfaces().asSequence()
                     .flatMap { it.inetAddresses.asSequence() }
@@ -308,10 +280,10 @@ class SonosEventSubscription(
             } else {
                 // WiFi is connected
                 val bytes = byteArrayOf(
-                    (ipAddress and 0xff).toByte(),
-                    ((ipAddress shr 8) and 0xff).toByte(),
-                    ((ipAddress shr 16) and 0xff).toByte(),
-                    ((ipAddress shr 24) and 0xff).toByte()
+                    (ipAddressInt and 0xff).toByte(),
+                    ((ipAddressInt shr 8) and 0xff).toByte(),
+                    ((ipAddressInt shr 16) and 0xff).toByte(),
+                    ((ipAddressInt shr 24) and 0xff).toByte()
                 )
                 "%d.%d.%d.%d".format(
                     bytes[0].toInt() and 0xff,

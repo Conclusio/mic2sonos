@@ -25,7 +25,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
@@ -34,10 +33,10 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.Notes
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.Divider
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -45,7 +44,6 @@ import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -79,7 +77,6 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import android.content.Intent
 import android.net.Uri
-import coil.compose.AsyncImagePainter
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -123,17 +120,16 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            Speech2SonosTheme {
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    SonosScreen(
-                        modifier = Modifier.padding(innerPadding),
-                        devicesFlow = sonosDiscovery.devices,
-                        viewModel = viewModel,
-                        onAddDummyDevices = { sonosDiscovery.addDummyDevices() },
-                        onRefreshDiscovery = { refreshDiscovery() }
-                    )
-                }
-            }
+        Speech2SonosTheme {
+        Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
+            SonosScreen(
+                modifier = Modifier.padding(innerPadding),
+                viewModel = viewModel,
+                onAddDummyDevices = { sonosDiscovery.addDummyDevices() },
+                onRefreshDiscovery = { refreshDiscovery() }
+            )
+        }
+        }
         }
     }
 
@@ -406,269 +402,6 @@ class SonosViewModel(
         }
     }
 
-    fun toggleTestPlayback() {
-        if (_selectedDevices.value.isEmpty()) {
-            _errorMessage.value = "Please select at least one device"
-            return
-        }
-
-        viewModelScope.launch {
-            try {
-                val currentlyTesting = _isTesting.value
-                if (currentlyTesting) {
-                    stopTestPlayback()
-                } else {
-                    startTestPlayback()
-                }
-            } catch (e: Exception) {
-                _errorMessage.value = "Test error: ${e.message}"
-                _isTesting.value = false
-            }
-        }
-    }
-
-    fun testLocalServer() {
-        if (_selectedDevices.value.isEmpty()) {
-            _errorMessage.value = "Please select at least one device"
-            return
-        }
-
-        viewModelScope.launch {
-            try {
-                val started = audioStreamer.start()
-                if (!started) {
-                    _errorMessage.value = "Failed to start server"
-                    return@launch
-                }
-                
-                val ipAddress = sonosController.getDeviceIpAddress()
-                if (ipAddress == null) {
-                    _errorMessage.value = "Could not determine device IP address"
-                    audioStreamer.stop()
-                    return@launch
-                }
-                
-                _isRecording.value = true  // Enable visualization
-                
-                _selectedDevices.value.forEach { device ->
-                    try {
-                        sonosController.playLocalTest(device, ipAddress)
-                    } catch (e: Exception) {
-                        _errorMessage.value = "Failed on ${device.name}: ${e.message}"
-                    }
-                }
-            } catch (e: Exception) {
-                _errorMessage.value = "Test error: ${e.message}"
-                _isRecording.value = false
-            }
-        }
-    }
-    
-    fun testStaticWav() {
-        if (_selectedDevices.value.isEmpty()) {
-            _errorMessage.value = "Please select at least one device"
-            return
-        }
-
-        viewModelScope.launch {
-            try {
-                // Start the server first (needed to serve static WAV)
-                val started = audioStreamer.start()
-                if (!started) {
-                    _errorMessage.value = "Failed to start server"
-                    return@launch
-                }
-                
-                val ipAddress = sonosController.getDeviceIpAddress()
-                if (ipAddress == null) {
-                    _errorMessage.value = "Could not determine device IP address"
-                    audioStreamer.stop()
-                    return@launch
-                }
-                
-                android.util.Log.i("SonosViewModel", "Testing static WAV at http://$ipAddress:8080/test-static.wav")
-                _selectedDevices.value.forEach { device ->
-                    try {
-                        sonosController.playStaticTest(device, ipAddress)
-                    } catch (e: Exception) {
-                        _errorMessage.value = "Failed on ${device.name}: ${e.message}"
-                    }
-                }
-            } catch (e: Exception) {
-                _errorMessage.value = "Static WAV test error: ${e.message}"
-            }
-        }
-    }
-    
-    fun startHlsStream() {
-        if (!permissionGranted) {
-            _errorMessage.value = "Microphone permission not granted"
-            return
-        }
-        
-        if (_selectedDevices.value.isEmpty()) {
-            _errorMessage.value = "Please select at least one device"
-            return
-        }
-
-        viewModelScope.launch {
-            try {
-                val started = audioStreamer.start()
-                if (!started) {
-                    _errorMessage.value = "Failed to start audio streaming"
-                    return@launch
-                }
-                
-                val ipAddress = sonosController.getDeviceIpAddress()
-                if (ipAddress == null) {
-                    _errorMessage.value = "Could not determine device IP address"
-                    audioStreamer.stop()
-                    return@launch
-                }
-                
-                // Wait a bit for first HLS segment to be created
-                android.util.Log.i("SonosViewModel", "Waiting for HLS segments to build...")
-                kotlinx.coroutines.delay(2500) // Wait for first segment
-                
-                _isRecording.value = true
-                
-                android.util.Log.i("SonosViewModel", "Starting HLS stream at http://$ipAddress:8080/live.m3u8")
-                _selectedDevices.value.forEach { device ->
-                    try {
-                        sonosController.playHlsStream(device, ipAddress)
-                    } catch (e: Exception) {
-                        _errorMessage.value = "Failed on ${device.name}: ${e.message}"
-                    }
-                }
-            } catch (e: Exception) {
-                _errorMessage.value = "HLS stream error: ${e.message}"
-                _isRecording.value = false
-            }
-        }
-    }
-    
-    /**
-     * Test the announce feature with a sample audio file.
-     * This plays audio over currently playing music with automatic ducking.
-     */
-    fun testAnnounce() {
-        if (_selectedDevices.value.isEmpty()) {
-            _errorMessage.value = "Please select at least one device"
-            return
-        }
-
-        viewModelScope.launch {
-            try {
-                // Use a well-known test audio file
-                val testUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
-                android.util.Log.i("SonosViewModel", "Testing announcement with: $testUrl")
-                
-                _selectedDevices.value.forEach { device ->
-                    try {
-                        val result = sonosController.playAnnouncement(device, testUrl, volume = 30)
-                        result.fold(
-                            onSuccess = { response ->
-                                if (response.success) {
-                                    android.util.Log.i("SonosViewModel", "Announcement started on ${device.name}, clipId: ${response.clipId}")
-                                } else {
-                                    _errorMessage.value = "Announce failed on ${device.name}: ${response.error}"
-                                }
-                            },
-                            onFailure = { e ->
-                                _errorMessage.value = "Announce failed on ${device.name}: ${e.message}"
-                            }
-                        )
-                    } catch (e: Exception) {
-                        _errorMessage.value = "Announce failed on ${device.name}: ${e.message}"
-                    }
-                }
-            } catch (e: Exception) {
-                _errorMessage.value = "Announce error: ${e.message}"
-            }
-        }
-    }
-    
-    /**
-     * Start streaming microphone audio as an announcement.
-     * The currently playing music will be ducked automatically.
-     */
-    fun startAnnouncementStream() {
-        if (!permissionGranted) {
-            _errorMessage.value = "Microphone permission not granted"
-            return
-        }
-        
-        if (_selectedDevices.value.isEmpty()) {
-            _errorMessage.value = "Please select at least one device"
-            return
-        }
-
-        viewModelScope.launch {
-            try {
-                val started = audioStreamer.start()
-                if (!started) {
-                    _errorMessage.value = "Failed to start audio streaming"
-                    return@launch
-                }
-                
-                val ipAddress = sonosController.getDeviceIpAddress()
-                if (ipAddress == null) {
-                    _errorMessage.value = "Could not determine device IP address"
-                    audioStreamer.stop()
-                    return@launch
-                }
-                
-                _isRecording.value = true
-                
-                android.util.Log.i("SonosViewModel", "Starting announcement stream at http://$ipAddress:8080/stream.wav")
-                _selectedDevices.value.forEach { device ->
-                    try {
-                        val result = sonosController.playAnnouncementStream(device, ipAddress, volume = 50)
-                        result.fold(
-                            onSuccess = { response ->
-                                if (response.success) {
-                                    android.util.Log.i("SonosViewModel", "Announcement stream started on ${device.name}")
-                                } else {
-                                    _errorMessage.value = "Announce stream failed on ${device.name}: ${response.error}"
-                                }
-                            },
-                            onFailure = { e ->
-                                _errorMessage.value = "Announce stream failed on ${device.name}: ${e.message}"
-                            }
-                        )
-                    } catch (e: Exception) {
-                        _errorMessage.value = "Failed on ${device.name}: ${e.message}"
-                    }
-                }
-            } catch (e: Exception) {
-                _errorMessage.value = "Announcement stream error: ${e.message}"
-                _isRecording.value = false
-            }
-        }
-    }
-
-    private suspend fun startTestPlayback() {
-        _isTesting.value = true
-        _selectedDevices.value.forEach { device ->
-            try {
-                sonosController.playTestAudio(device)
-            } catch (e: Exception) {
-                _errorMessage.value = "Failed to test on ${device.name}: ${e.message}"
-            }
-        }
-    }
-
-    private suspend fun stopTestPlayback() {
-        _selectedDevices.value.forEach { device ->
-            try {
-                sonosController.stop(device)
-            } catch (e: Exception) {
-                // Ignore stop errors
-            }
-        }
-        _isTesting.value = false
-    }
-
     private suspend fun startStreaming() {
         val started = audioStreamer.start()
         if (!started) {
@@ -742,7 +475,6 @@ class SonosViewModel(
 @Composable
 fun SonosScreen(
     modifier: Modifier = Modifier,
-    devicesFlow: StateFlow<List<SonosDevice>>,
     viewModel: SonosViewModel,
     onAddDummyDevices: () -> Unit = {},
     onRefreshDiscovery: () -> Unit = {}
@@ -750,7 +482,6 @@ fun SonosScreen(
     val devices by viewModel.devicesWithNowPlaying.collectAsState()
     val selectedDevices by viewModel.selectedDevices.collectAsState()
     val isRecording by viewModel.isRecording.collectAsState()
-    val isTesting by viewModel.isTesting.collectAsState()
     val waveformData by viewModel.waveformData.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
     val amplification by viewModel.amplification.collectAsState()
@@ -850,7 +581,7 @@ fun SonosScreen(
                     .fillMaxWidth()
                     .padding(vertical = 12.dp)
             ) {
-                Divider(
+                HorizontalDivider(
                     modifier = Modifier
                         .fillMaxWidth(0.9f)
                         .align(Alignment.Center)
@@ -1054,8 +785,8 @@ fun DeviceCard(
                         modifier = Modifier.size(40.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Default.Notes,
-                            contentDescription = "View lyrics",
+                            imageVector = Icons.Filled.MoreVert,
+                            contentDescription = "More options",
                             modifier = Modifier.size(20.dp)
                         )
                     }
