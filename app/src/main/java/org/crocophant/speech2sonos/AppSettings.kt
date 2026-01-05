@@ -2,6 +2,7 @@ package org.crocophant.speech2sonos
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.core.content.edit
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -25,27 +26,27 @@ class AppSettings(context: Context) {
     fun setAmplification(value: Int) {
         val clamped = value.coerceIn(1, 20)
         _amplification.value = clamped
-        prefs.edit().putInt(KEY_AMPLIFICATION, clamped).apply()
+        prefs.edit { putInt(KEY_AMPLIFICATION, clamped) }
     }
     
     fun setAnnouncementMode(enabled: Boolean) {
         _announcementMode.value = enabled
-        prefs.edit().putBoolean(KEY_ANNOUNCEMENT_MODE, enabled).apply()
+        prefs.edit { putBoolean(KEY_ANNOUNCEMENT_MODE, enabled) }
     }
     
     fun setAnnouncementVolume(value: Int) {
         val clamped = value.coerceIn(0, 100)
         _announcementVolume.value = clamped
-        prefs.edit().putInt(KEY_ANNOUNCEMENT_VOLUME, clamped).apply()
+        prefs.edit { putInt(KEY_ANNOUNCEMENT_VOLUME, clamped) }
     }
     
     fun setPushToTalkMode(enabled: Boolean) {
         _pushToTalkMode.value = enabled
-        prefs.edit().putBoolean(KEY_PUSH_TO_TALK, enabled).apply()
+        prefs.edit { putBoolean(KEY_PUSH_TO_TALK, enabled) }
     }
     
     fun saveSelectedDeviceIPs(ipAddresses: Set<String>) {
-        prefs.edit().putStringSet(KEY_SELECTED_DEVICES, ipAddresses).apply()
+        prefs.edit { putStringSet(KEY_SELECTED_DEVICES, ipAddresses) }
     }
     
     fun getSelectedDeviceIPs(): Set<String> {
