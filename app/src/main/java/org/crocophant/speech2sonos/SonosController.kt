@@ -296,8 +296,8 @@ class SonosController(private val context: Context) {
      * Play live microphone stream as an announcement.
      * The currently playing music will be ducked and restored after streaming stops.
      */
-    suspend fun playAnnouncementStream(device: SonosDevice, localIp: String, volume: Int? = null): Result<AudioClipResponse> {
-        val streamUrl = "http://$localIp:8080/stream.wav"
+    suspend fun playAnnouncementStream(device: SonosDevice, localIp: String, port: Int, volume: Int? = null): Result<AudioClipResponse> {
+        val streamUrl = "http://$localIp:$port/stream.wav"
         Log.i(TAG, "Starting announcement stream: $streamUrl")
         return playAnnouncement(device, streamUrl, volume)
     }

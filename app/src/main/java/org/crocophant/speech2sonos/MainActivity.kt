@@ -3,7 +3,6 @@ package org.crocophant.speech2sonos
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -31,9 +30,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Notes
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MusicNote
-import androidx.compose.material.icons.filled.Notes
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Card
@@ -61,6 +60,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -86,6 +86,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import org.crocophant.speech2sonos.ui.theme.Speech2SonosTheme
+import androidx.core.net.toUri
 
 class MainActivity : ComponentActivity() {
 
@@ -104,7 +105,7 @@ class MainActivity : ComponentActivity() {
         }
 
     private val viewModel: SonosViewModel by lazy {
-        ViewModelProvider(this, SonosViewModelFactory(audioStreamer, sonosController, appSettings, sonosDiscovery.devices, this))[SonosViewModel::class.java]
+        ViewModelProvider(this, SonosViewModelFactory(audioStreamer, sonosController, appSettings, sonosDiscovery.devices, application))[SonosViewModel::class.java]
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -157,12 +158,12 @@ class SonosViewModelFactory(
     private val sonosController: SonosController,
     private val appSettings: AppSettings,
     private val discoveredDevices: StateFlow<List<SonosDevice>>,
-    private val context: android.content.Context
+    private val application: android.app.Application
 ) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(SonosViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")
-            return SonosViewModel(audioStreamer, sonosController, appSettings, discoveredDevices, context) as T
+            return SonosViewModel(audioStreamer, sonosController, appSettings, discoveredDevices, application) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }
@@ -173,7 +174,7 @@ class SonosViewModel(
     private val sonosController: SonosController,
     private val appSettings: AppSettings,
     private val discoveredDevices: StateFlow<List<SonosDevice>>,
-    private val context: android.content.Context
+    private val application: android.app.Application
 ) : ViewModel() {
     private val _selectedDevices = MutableStateFlow<Set<SonosDevice>>(emptySet())
     val selectedDevices: StateFlow<Set<SonosDevice>> = _selectedDevices.asStateFlow()
@@ -187,9 +188,6 @@ class SonosViewModel(
     val recordingState: StateFlow<RecordingState> = _recordingState.asStateFlow()
     
     val isRecording: StateFlow<Boolean> = recordingState.map { it == RecordingState.RECORDING || it == RecordingState.INITIALIZING }.stateIn(viewModelScope, SharingStarted.Lazily, false)
-
-    private val _isTesting = MutableStateFlow(false)
-    val isTesting: StateFlow<Boolean> = _isTesting.asStateFlow()
 
     val waveformData: StateFlow<List<Float>> = audioStreamer.waveformData
     
@@ -215,7 +213,7 @@ class SonosViewModel(
 
     private fun initializeEventSubscriptions() {
         try {
-            eventSubscription = SonosEventSubscription(context) { device, newInfo ->
+            eventSubscription = SonosEventSubscription(application) { device, newInfo ->
                 Log.d("SonosViewModel", "Event callback: Track changed on ${device.name}")
                 val updated = _devicesWithNowPlaying.value.map { d ->
                     if (d.ipAddress == device.ipAddress) {
@@ -459,14 +457,15 @@ class SonosViewModel(
         _recordingState.value = RecordingState.RECORDING
 
         val useAnnouncement = appSettings.announcementMode.value
-        val streamUrl = "http://$ipAddress:8080/stream.wav"
+        val port = audioStreamer.assignedPort.value
+        val streamUrl = "http://$ipAddress:$port/stream.wav"
         
         _selectedDevices.value.forEach { device ->
             try {
                 if (useAnnouncement) {
                     // Use announcement mode with ducking
                     val volume = appSettings.announcementVolume.value
-                    val result = sonosController.playAnnouncementStream(device, ipAddress, volume = volume)
+                    val result = sonosController.playAnnouncementStream(device, ipAddress, port, volume = volume)
                     result.fold(
                         onSuccess = { response ->
                             if (!response.success) {
@@ -496,7 +495,7 @@ class SonosViewModel(
             _selectedDevices.value.forEach { device ->
                 try {
                     sonosController.stop(device)
-                } catch (e: Exception) {
+                } catch (_: Exception) {
                     // Ignore stop errors
                 }
             }
@@ -529,12 +528,11 @@ fun SonosScreen(
     val announcementVolume by viewModel.announcementVolume.collectAsState()
     val pushToTalkMode by viewModel.pushToTalkMode.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
-    var showSettings by remember { mutableStateOf(false) }
-    var isVisualizerPressed by remember { mutableStateOf(false) }
     val recordingState by viewModel.recordingState.collectAsState()
     
     val noDeviceSelectedMessage = "Select a device first"
     val sheetState = rememberModalBottomSheetState()
+    val scope = rememberCoroutineScope()
     
     var isRefreshing by remember { mutableStateOf(false) }
     val pullRefreshState = rememberPullToRefreshState()
@@ -560,9 +558,11 @@ fun SonosScreen(
         }
     }
 
-    if (showSettings) {
+    if (sheetState.isVisible) {
         ModalBottomSheet(
-            onDismissRequest = { showSettings = false },
+            onDismissRequest = {
+                scope.launch { sheetState.hide() }
+            },
             sheetState = sheetState
         ) {
             SettingsContent(
@@ -618,7 +618,9 @@ fun SonosScreen(
                         )
                     }
                 }
-                IconButton(onClick = { showSettings = true }) {
+                IconButton(onClick = { 
+                    scope.launch { sheetState.show() }
+                }) {
                     Icon(Icons.Default.Settings, contentDescription = "Settings")
                 }
             }
@@ -673,7 +675,6 @@ fun SonosScreen(
                                              snackbarHostState.showSnackbar(noDeviceSelectedMessage)
                                          }
                                      } else {
-                                         isVisualizerPressed = true
                                          if (!isRecording) viewModel.startRecording()
                                      }
                                  }
@@ -681,7 +682,6 @@ fun SonosScreen(
                              onPress = {
                                  if (pushToTalkMode) {
                                      this.tryAwaitRelease()
-                                     isVisualizerPressed = false
                                      if (isRecording) viewModel.stopRecording()
                                  }
                              },
@@ -853,14 +853,14 @@ fun DeviceCard(
                                 val query = "${device.nowPlayingInfo.artist} $cleanTitle".trim()
                                 Log.d("DeviceCard", "Searching Genius for: $query")
                                 val geniusUrl = "https://genius.com/search?q=${java.net.URLEncoder.encode(query, "UTF-8")}"
-                                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(geniusUrl))
+                                val intent = Intent(Intent.ACTION_VIEW, geniusUrl.toUri())
                                 context.startActivity(intent)
                             }
                         },
                         modifier = Modifier.size(40.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Filled.Notes,
+                            imageVector = Icons.AutoMirrored.Filled.Notes,
                             contentDescription = "View lyrics on Genius",
                             modifier = Modifier.size(20.dp)
                         )
@@ -1068,7 +1068,7 @@ fun SettingsContent(
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
                         Text("Volume", style = MaterialTheme.typography.bodyMedium)
-                        Text("${announcementVolume}", style = MaterialTheme.typography.bodyMedium)
+                        Text("$announcementVolume", style = MaterialTheme.typography.bodyMedium)
                     }
                     Slider(
                         value = announcementVolume.toFloat(),

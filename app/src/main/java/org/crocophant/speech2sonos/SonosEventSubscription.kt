@@ -17,6 +17,7 @@ import io.ktor.server.request.receiveText
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -44,8 +45,11 @@ class SonosEventSubscription(
     }
 
     private var eventServer: ApplicationEngine? = null
+    private var assignedPort: Int? = null
     private val subscriptions = mutableMapOf<String, SubscriptionInfo>() // device IP -> subscription info
-    private val scope = CoroutineScope(Dispatchers.IO + Job())
+    private val scope = CoroutineScope(Dispatchers.IO + Job() + CoroutineExceptionHandler { _, exception ->
+        Log.e(TAG, "Uncaught exception in event subscription scope: ${exception.message}", exception)
+    })
     private val sonosController = SonosController(context)
 
     data class SubscriptionInfo(
@@ -57,59 +61,88 @@ class SonosEventSubscription(
 
     fun startEventServer(): Boolean {
         return try {
+            // Ensure any old server is stopped first
+            stopEventServer()
+            
             val localIp = getLocalIpAddress() ?: run {
                 Log.e(TAG, "Could not determine local IP address")
                 return false
             }
 
-            Log.d(TAG, "Starting event server on $localIp:$EVENT_SERVER_PORT")
+            Log.d(TAG, "Starting event server on $localIp with port 0 (dynamic assignment)")
+            
+            try {
+                // Use port 0 to let OS assign an available port
+                eventServer = embeddedServer(ServerCIO, port = 0) {
+                    routing {
+                        // Catch all requests - handle NOTIFY and any other method
+                        route("/notify") {
+                            handle {
+                                Log.d(TAG, "*** Received ${call.request.httpMethod} on /notify ***")
+                                val sid = call.request.header("SID")
 
-            eventServer = embeddedServer(ServerCIO, port = EVENT_SERVER_PORT) {
-                routing {
-                    // Catch all requests - handle NOTIFY and any other method
-                    route("/notify") {
-                        handle {
-                            Log.d(TAG, "*** Received ${call.request.httpMethod} on /notify ***")
-                            val sid = call.request.header("SID")
+                                if (sid == null) {
+                                    Log.w(TAG, "Request missing SID header")
+                                    call.response.status(HttpStatusCode.BadRequest)
+                                    call.respondText("Missing SID")
+                                    return@handle
+                                }
 
-                            if (sid == null) {
-                                Log.w(TAG, "Request missing SID header")
-                                call.response.status(HttpStatusCode.BadRequest)
-                                call.respondText("Missing SID")
-                                return@handle
+                                Log.d(TAG, "Received request for SID: $sid")
+
+                                // Find subscription by SID
+                                val subscriptionInfo = subscriptions.values.find { it.sid == sid }
+                                if (subscriptionInfo == null) {
+                                    Log.w(TAG, "Received notification for unknown subscription: $sid")
+                                    call.response.status(HttpStatusCode.BadRequest)
+                                    call.respondText("Unknown SID")
+                                    return@handle
+                                }
+
+                                // Get request body content
+                                val content = call.receiveText()
+                                Log.d(TAG, "Request body length: ${content.length}")
+                                if (content.isNotEmpty()) {
+                                    parseAndHandleNotification(subscriptionInfo.deviceIp, content)
+                                }
+
+                                // Respond with 200 OK
+                                call.response.status(HttpStatusCode.OK)
+                                call.respondText("OK")
                             }
-
-                            Log.d(TAG, "Received request for SID: $sid")
-
-                            // Find subscription by SID
-                            val subscriptionInfo = subscriptions.values.find { it.sid == sid }
-                            if (subscriptionInfo == null) {
-                                Log.w(TAG, "Received notification for unknown subscription: $sid")
-                                call.response.status(HttpStatusCode.BadRequest)
-                                call.respondText("Unknown SID")
-                                return@handle
-                            }
-
-                            // Get request body content
-                            val content = call.receiveText()
-                            Log.d(TAG, "Request body length: ${content.length}")
-                            if (content.isNotEmpty()) {
-                                parseAndHandleNotification(subscriptionInfo.deviceIp, content)
-                            }
-
-                            // Respond with 200 OK
-                            call.response.status(HttpStatusCode.OK)
-                            call.respondText("OK")
                         }
                     }
                 }
+                eventServer?.start()
+                
+                // Get the actual assigned port from resolvedConnectors
+                val engine = eventServer as? io.ktor.server.engine.ApplicationEngine
+                scope.launch {
+                    try {
+                        val connectors = engine?.resolvedConnectors() ?: emptyList()
+                        if (connectors.isNotEmpty()) {
+                            assignedPort = connectors.first().port
+                            Log.d(TAG, "Event server assigned port $assignedPort")
+                        } else {
+                            Log.w(TAG, "Could not determine assigned port, using fallback ${EVENT_SERVER_PORT}")
+                            assignedPort = EVENT_SERVER_PORT
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Error getting resolved connectors: ${e.message}, using fallback ${EVENT_SERVER_PORT}")
+                        assignedPort = EVENT_SERVER_PORT
+                    }
+                }
+                
+                Log.d(TAG, "Event server started successfully")
+                true
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to start event server: ${e.message}")
+                eventServer?.stop()
+                eventServer = null
+                false
             }
-            eventServer?.start()
-
-            Log.d(TAG, "Event server started successfully")
-            true
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to start event server", e)
+            Log.e(TAG, "Failed to start event server: ${e.message}", e)
             false
         }
     }
@@ -162,7 +195,8 @@ class SonosEventSubscription(
             }
 
             val subscriptionUrl = "http://${device.ipAddress}:${device.port}/MediaRenderer/AVTransport/Event"
-            val callbackUrl = "http://$localIp:$EVENT_SERVER_PORT/notify"
+            val port = assignedPort ?: EVENT_SERVER_PORT
+            val callbackUrl = "http://$localIp:$port/notify"
 
             Log.d(TAG, "Subscribing to events on ${device.name} at $subscriptionUrl")
             Log.d(TAG, "Callback URL: $callbackUrl")
@@ -262,7 +296,8 @@ class SonosEventSubscription(
 
     fun stopEventServer() {
         try {
-            eventServer?.stop()
+            eventServer?.stop(gracePeriodMillis = 0, timeoutMillis = 1000)
+            eventServer = null
             Log.d(TAG, "Event server stopped")
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping event server", e)

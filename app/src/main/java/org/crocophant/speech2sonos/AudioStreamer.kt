@@ -40,6 +40,7 @@ import java.io.IOException
 import java.nio.channels.ClosedChannelException
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
+import kotlin.math.sin
 import kotlin.math.sqrt
 
 /**
@@ -63,6 +64,9 @@ class AudioStreamer {
     private var serverJob: Job? = null
     private var recordingJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    
+    private val _assignedPort = MutableStateFlow(0)
+    val assignedPort: StateFlow<Int> = _assignedPort.asStateFlow()
 
     private val _audioDataFlow = MutableSharedFlow<ByteArray>(replay = 0, extraBufferCapacity = 64)
     private val audioDataFlow = _audioDataFlow.asSharedFlow()
@@ -72,7 +76,28 @@ class AudioStreamer {
     private val rawPcmFlow = _rawPcmFlow.asSharedFlow()
     
     // HLS segment storage
-    private data class HlsSegment(val id: Int, val data: ByteArray, val durationMs: Long)
+    private data class HlsSegment(val id: Int, val data: ByteArray, val durationMs: Long) {
+        override fun equals(other: Any?): Boolean {
+            if (this === other) return true
+            if (javaClass != other?.javaClass) return false
+
+            other as HlsSegment
+
+            if (id != other.id) return false
+            if (durationMs != other.durationMs) return false
+            if (!data.contentEquals(other.data)) return false
+
+            return true
+        }
+
+        override fun hashCode(): Int {
+            var result = id
+            result = 31 * result + durationMs.hashCode()
+            result = 31 * result + data.contentHashCode()
+            return result
+        }
+    }
+
     private val hlsSegments = mutableListOf<HlsSegment>()
     private var hlsSegmentCounter = 0
     private var currentSegmentBuffer = java.io.ByteArrayOutputStream()
@@ -153,7 +178,7 @@ class AudioStreamer {
     }
 
     private fun startServer() {
-        server = embeddedServer(CIO, host = "0.0.0.0", port = 8080) {
+        server = embeddedServer(CIO, host = "0.0.0.0", port = 0) {
             install(StatusPages) {
                 exception<ClosedChannelException> { _, _ ->
                     Log.d(TAG, "Client closed connection")
@@ -205,7 +230,7 @@ class AudioStreamer {
                     
                     for (i in 0 until numSamples) {
                         val t = i.toDouble() / sampleRate
-                        val sample = (Math.sin(2 * Math.PI * frequency * t) * 32767).toInt().toShort()
+                        val sample = (sin(2 * Math.PI * frequency * t) * 32767).toInt().toShort()
                         pcmData[i * 2] = (sample.toInt() and 0xFF).toByte()
                         pcmData[i * 2 + 1] = (sample.toInt() shr 8).toByte()
                     }
@@ -229,7 +254,7 @@ class AudioStreamer {
                     
                     for (i in 0 until numSamples) {
                         val t = i.toDouble() / sampleRate
-                        val sample = (Math.sin(2 * Math.PI * frequency * t) * 32767).toInt().toShort()
+                        val sample = (sin(2 * Math.PI * frequency * t) * 32767).toInt().toShort()
                         pcmData[i * 2] = (sample.toInt() and 0xFF).toByte()
                         pcmData[i * 2 + 1] = (sample.toInt() shr 8).toByte()
                     }
@@ -258,8 +283,8 @@ class AudioStreamer {
                             for (i in 0 until chunk.size / 2) {
                                 val sample = (chunk[i * 2].toInt() and 0xFF) or (chunk[i * 2 + 1].toInt() shl 8)
                                 val signed = sample.toShort().toInt()
-                                if (kotlin.math.abs(signed) > maxSample) {
-                                    maxSample = kotlin.math.abs(signed)
+                                if (abs(signed) > maxSample) {
+                                    maxSample = abs(signed)
                                 }
                             }
                             if (pcmBuffer.size() >= bytesNeeded) {
@@ -269,7 +294,7 @@ class AudioStreamer {
                                 throw kotlinx.coroutines.CancellationException("Timeout")
                             }
                         }
-                    } catch (e: kotlinx.coroutines.CancellationException) {
+                    } catch (_: kotlinx.coroutines.CancellationException) {
                         Log.i(TAG, "Buffered ${pcmBuffer.size()} bytes, max sample: $maxSample")
                     }
                     
@@ -362,7 +387,7 @@ class AudioStreamer {
                             }
                         } catch (e: IOException) {
                             Log.d(TAG, "WAV client disconnected: ${e.message}")
-                        } catch (e: kotlinx.coroutines.CancellationException) {
+                        } catch (_: kotlinx.coroutines.CancellationException) {
                             Log.d(TAG, "WAV streaming cancelled")
                         } catch (e: Exception) {
                             Log.e(TAG, "Error streaming WAV", e)
@@ -396,7 +421,7 @@ class AudioStreamer {
                                 write(audioChunk)
                                 flush()
                             }
-                        } catch (e: IOException) {
+                        } catch (_: IOException) {
                             Log.d(TAG, "Test stream client disconnected")
                         }
                     }
@@ -416,7 +441,7 @@ class AudioStreamer {
                     
                     for (i in 0 until numSamples) {
                         val t = i.toDouble() / sampleRate
-                        val sample = (Math.sin(2 * Math.PI * frequency * t) * 32767).toInt().toShort()
+                        val sample = (sin(2 * Math.PI * frequency * t) * 32767).toInt().toShort()
                         pcmData[i * 2] = (sample.toInt() and 0xFF).toByte()
                         pcmData[i * 2 + 1] = (sample.toInt() shr 8).toByte()
                     }
@@ -563,7 +588,7 @@ class AudioStreamer {
                                     Log.d(TAG, "Streamed $chunkCount chunks, $totalBytes bytes total")
                                 }
                             }
-                        } catch (e: IOException) {
+                        } catch (_: IOException) {
                             Log.d(TAG, "Client disconnected after streaming")
                         } catch (e: Exception) {
                             Log.e(TAG, "Error streaming audio", e)
@@ -575,8 +600,21 @@ class AudioStreamer {
 
         serverJob = scope.launch {
             try {
+                val engine = server as? ApplicationEngine
+                // Get resolved port after server starts
+                scope.launch {
+                    try {
+                        val connectors = engine?.resolvedConnectors() ?: emptyList()
+                        if (connectors.isNotEmpty()) {
+                            _assignedPort.value = connectors.first().port
+                            Log.d(TAG, "Audio server assigned port ${_assignedPort.value}")
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Could not get resolved port: ${e.message}")
+                    }
+                }
                 server?.start(wait = true)
-            } catch (e: kotlinx.coroutines.CancellationException) {
+            } catch (_: kotlinx.coroutines.CancellationException) {
                 Log.d(TAG, "Server stopped")
             } catch (e: Exception) {
                 if (isRunning.get()) {
@@ -617,8 +655,8 @@ class AudioStreamer {
                     for (i in 0 until bytesRead / 2) {
                         val sample = (pcmBuffer[i * 2].toInt() and 0xFF) or (pcmBuffer[i * 2 + 1].toInt() shl 8)
                         val signedSample = sample.toShort().toInt()
-                        if (kotlin.math.abs(signedSample) > maxSample) {
-                            maxSample = kotlin.math.abs(signedSample)
+                        if (abs(signedSample) > maxSample) {
+                            maxSample = abs(signedSample)
                         }
                     }
                     if (maxSample > 100) {
@@ -666,7 +704,7 @@ class AudioStreamer {
                         Log.e(TAG, "Codec in illegal state", e)
                     }
                     break
-                } catch (e: kotlinx.coroutines.CancellationException) {
+                } catch (_: kotlinx.coroutines.CancellationException) {
                     break
                 } catch (e: Exception) {
                     if (isRunning.get()) {
@@ -780,7 +818,8 @@ class AudioStreamer {
         // Using 0xF1 = 11110001 = MPEG-4, layer 00, protection_absent=1
         adtsHeader[1] = 0xF1.toByte()
         
-        // Byte 2: PPFF FFFC where PP=profile-1, FFFF=freq_idx, C=channel_config high bit
+        // Byte 2: PPFF FFFC where PP=profile-1, FFFF=freq_idx, C=channel_config bit 2
+        // For mono (chanCfg=1), bit 2 is always 0
         adtsHeader[2] = (((profile - 1) shl 6) + (freqIdx shl 2) + (chanCfg shr 2)).toByte()
         
         // Byte 3: CCOO OOOO where CC=channel_config low 2 bits, O=originality, home, etc + frame length high 2 bits
