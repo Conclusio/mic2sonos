@@ -1,5 +1,6 @@
 package org.crocophant.speech2sonos
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.net.wifi.WifiManager
 import android.util.Log
@@ -263,6 +264,7 @@ class SonosEventSubscription(
         stopEventServer()
     }
 
+    @SuppressLint("MissingPermission")
     private fun getLocalIpAddress(): String? {
         try {
             val wifiManager = context.getSystemService(Context.WIFI_SERVICE) as WifiManager
