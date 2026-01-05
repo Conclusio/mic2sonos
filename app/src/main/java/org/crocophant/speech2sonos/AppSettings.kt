@@ -19,6 +19,9 @@ class AppSettings(context: Context) {
     private val _announcementVolume = MutableStateFlow(prefs.getInt(KEY_ANNOUNCEMENT_VOLUME, 15))
     val announcementVolume: StateFlow<Int> = _announcementVolume.asStateFlow()
     
+    private val _pushToTalkMode = MutableStateFlow(prefs.getBoolean(KEY_PUSH_TO_TALK, false))
+    val pushToTalkMode: StateFlow<Boolean> = _pushToTalkMode.asStateFlow()
+    
     fun setAmplification(value: Int) {
         val clamped = value.coerceIn(1, 20)
         _amplification.value = clamped
@@ -36,6 +39,11 @@ class AppSettings(context: Context) {
         prefs.edit().putInt(KEY_ANNOUNCEMENT_VOLUME, clamped).apply()
     }
     
+    fun setPushToTalkMode(enabled: Boolean) {
+        _pushToTalkMode.value = enabled
+        prefs.edit().putBoolean(KEY_PUSH_TO_TALK, enabled).apply()
+    }
+    
     fun saveSelectedDeviceIPs(ipAddresses: Set<String>) {
         prefs.edit().putStringSet(KEY_SELECTED_DEVICES, ipAddresses).apply()
     }
@@ -48,6 +56,7 @@ class AppSettings(context: Context) {
         private const val KEY_AMPLIFICATION = "amplification"
         private const val KEY_ANNOUNCEMENT_MODE = "announcement_mode"
         private const val KEY_ANNOUNCEMENT_VOLUME = "announcement_volume"
+        private const val KEY_PUSH_TO_TALK = "push_to_talk_mode"
         private const val KEY_SELECTED_DEVICES = "selected_device_ips"
     }
 }

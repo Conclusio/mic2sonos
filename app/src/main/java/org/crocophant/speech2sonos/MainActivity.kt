@@ -39,6 +39,13 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.FloatingActionButtonDefaults
@@ -80,6 +87,9 @@ import android.net.Uri
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import org.crocophant.speech2sonos.ui.theme.Speech2SonosTheme
 
@@ -177,8 +187,12 @@ class SonosViewModel(
     private val _devicesWithNowPlaying = MutableStateFlow<List<SonosDevice>>(emptyList())
     val devicesWithNowPlaying: StateFlow<List<SonosDevice>> = _devicesWithNowPlaying.asStateFlow()
 
-    private val _isRecording = MutableStateFlow(false)
-    val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
+    enum class RecordingState { IDLE, INITIALIZING, RECORDING, STOPPING }
+    
+    private val _recordingState = MutableStateFlow(RecordingState.IDLE)
+    val recordingState: StateFlow<RecordingState> = _recordingState.asStateFlow()
+    
+    val isRecording: StateFlow<Boolean> = recordingState.map { it == RecordingState.RECORDING || it == RecordingState.INITIALIZING }.stateIn(viewModelScope, SharingStarted.Lazily, false)
 
     private val _isTesting = MutableStateFlow(false)
     val isTesting: StateFlow<Boolean> = _isTesting.asStateFlow()
@@ -188,6 +202,7 @@ class SonosViewModel(
     val amplification: StateFlow<Int> = appSettings.amplification
     val announcementMode: StateFlow<Boolean> = appSettings.announcementMode
     val announcementVolume: StateFlow<Int> = appSettings.announcementVolume
+    val pushToTalkMode: StateFlow<Boolean> = appSettings.pushToTalkMode
 
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
@@ -264,6 +279,10 @@ class SonosViewModel(
     
     fun setAnnouncementVolume(value: Int) {
         appSettings.setAnnouncementVolume(value)
+    }
+    
+    fun setPushToTalkMode(enabled: Boolean) {
+        appSettings.setPushToTalkMode(enabled)
     }
     
     init {
@@ -389,15 +408,42 @@ class SonosViewModel(
 
         viewModelScope.launch {
             try {
-                val currentlyRecording = _isRecording.value
+                val currentlyRecording = _recordingState.value == RecordingState.RECORDING || _recordingState.value == RecordingState.INITIALIZING
                 if (currentlyRecording) {
-                    stopStreaming()
+                    stopRecording()
                 } else {
-                    startStreaming()
+                    startRecording()
                 }
             } catch (e: Exception) {
                 _errorMessage.value = "Error: ${e.message}"
-                _isRecording.value = false
+                _recordingState.value = RecordingState.IDLE
+            }
+        }
+    }
+    
+    fun startRecording() {
+        if (!permissionGranted || _selectedDevices.value.isEmpty()) {
+            return
+        }
+        _recordingState.value = RecordingState.INITIALIZING
+        viewModelScope.launch {
+            try {
+                startStreaming()
+            } catch (e: Exception) {
+                _errorMessage.value = "Error: ${e.message}"
+                _recordingState.value = RecordingState.IDLE
+            }
+        }
+    }
+    
+    fun stopRecording() {
+        _recordingState.value = RecordingState.STOPPING
+        viewModelScope.launch {
+            try {
+                stopStreaming()
+            } catch (e: Exception) {
+                _errorMessage.value = "Error: ${e.message}"
+                _recordingState.value = RecordingState.IDLE
             }
         }
     }
@@ -416,7 +462,7 @@ class SonosViewModel(
             return
         }
 
-        _isRecording.value = true
+        _recordingState.value = RecordingState.RECORDING
 
         val useAnnouncement = appSettings.announcementMode.value
         val streamUrl = "http://$ipAddress:8080/stream.wav"
@@ -462,7 +508,7 @@ class SonosViewModel(
             }
         }
         audioStreamer.stop()
-        _isRecording.value = false
+        _recordingState.value = RecordingState.IDLE
     }
 
     fun clearError() {
@@ -487,10 +533,24 @@ fun SonosScreen(
     val amplification by viewModel.amplification.collectAsState()
     val announcementMode by viewModel.announcementMode.collectAsState()
     val announcementVolume by viewModel.announcementVolume.collectAsState()
+    val pushToTalkMode by viewModel.pushToTalkMode.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     var showSettings by remember { mutableStateOf(false) }
-    var showGainSlider by remember { mutableStateOf(false) }
+    var isVisualizerPressed by remember { mutableStateOf(false) }
+    val recordingState by viewModel.recordingState.collectAsState()
+    
+    val noDeviceSelectedMessage = "Select a device first"
     val sheetState = rememberModalBottomSheetState()
+    
+    var isRefreshing by remember { mutableStateOf(false) }
+    val pullRefreshState = rememberPullToRefreshState()
+    
+    LaunchedEffect(isRefreshing) {
+        if (isRefreshing) {
+            onRefreshDiscovery()
+            isRefreshing = false
+        }
+    }
     
     LaunchedEffect(devices) {
         Log.d("SonosScreen", "devices updated: ${devices.size} devices")
@@ -512,14 +572,16 @@ fun SonosScreen(
             sheetState = sheetState
         ) {
             SettingsContent(
-                amplification = amplification,
-                announcementMode = announcementMode,
-                announcementVolume = announcementVolume,
-                onAmplificationChange = { viewModel.setAmplification(it) },
-                onAnnouncementModeChange = { viewModel.setAnnouncementMode(it) },
-                onAnnouncementVolumeChange = { viewModel.setAnnouncementVolume(it) },
-                onAddDummyDevices = onAddDummyDevices
-            )
+                 amplification = amplification,
+                 announcementMode = announcementMode,
+                 announcementVolume = announcementVolume,
+                 pushToTalkMode = pushToTalkMode,
+                 onAmplificationChange = { viewModel.setAmplification(it) },
+                 onAnnouncementModeChange = { viewModel.setAnnouncementMode(it) },
+                 onAnnouncementVolumeChange = { viewModel.setAnnouncementVolume(it) },
+                 onPushToTalkModeChange = { viewModel.setPushToTalkMode(it) },
+                 onAddDummyDevices = onAddDummyDevices
+             )
         }
     }
 
@@ -567,13 +629,22 @@ fun SonosScreen(
                 }
             }
 
-            DeviceList(
-                devices = devices,
-                selectedDevices = selectedDevices,
-                onDeviceSelectionChanged = { device -> viewModel.toggleDeviceSelection(device) },
+            PullToRefreshBox(
                 modifier = Modifier.weight(1f),
-                context = LocalContext.current
-            )
+                isRefreshing = isRefreshing,
+                onRefresh = {
+                    isRefreshing = true
+                },
+                state = pullRefreshState
+            ) {
+                DeviceList(
+                    devices = devices,
+                    selectedDevices = selectedDevices,
+                    onDeviceSelectionChanged = { device -> viewModel.toggleDeviceSelection(device) },
+                    modifier = Modifier.fillMaxSize(),
+                    context = LocalContext.current
+                )
+            }
 
             // Inset divider with vertical spacing
             Box(
@@ -588,43 +659,53 @@ fun SonosScreen(
                 )
             }
 
-            // Waveform with tap-to-show gain slider
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(100.dp)
-                    .padding(horizontal = 16.dp)
-                    .clickable { showGainSlider = !showGainSlider }
-            ) {
-                AudioWaveformVisualizer(
-                    waveformData = waveformData,
-                    isRecording = isRecording,
-                    showDeviceSelectionHint = selectedDevices.isEmpty(),
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
-            
-            // Gain slider (hidden by default, shown on waveform tap)
-            AnimatedVisibility(
-                visible = showGainSlider,
-                enter = expandVertically(),
-                exit = shrinkVertically()
-            ) {
-                GainSlider(
-                    value = amplification,
-                    onValueChange = { viewModel.setAmplification(it) },
-                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
-                )
-            }
+            // Interactive waveform visualizer - serves as play/record button
+             AudioWaveformVisualizer(
+                 waveformData = waveformData,
+                 recordingState = recordingState,
+                 showDeviceSelectionHint = selectedDevices.isEmpty(),
+                 isPushToTalk = pushToTalkMode,
+                 deviceSelectionMessage = noDeviceSelectedMessage,
+                 modifier = Modifier
+                     .fillMaxWidth(0.9f)
+                     .height(100.dp)
+                     .align(Alignment.CenterHorizontally)
+                     .pointerInput(pushToTalkMode, selectedDevices, noDeviceSelectedMessage) {
+                         detectTapGestures(
+                             onLongPress = {
+                                 if (pushToTalkMode) {
+                                     if (selectedDevices.isEmpty()) {
+                                         viewModel.viewModelScope.launch {
+                                             snackbarHostState.showSnackbar(noDeviceSelectedMessage)
+                                         }
+                                     } else {
+                                         isVisualizerPressed = true
+                                         if (!isRecording) viewModel.startRecording()
+                                     }
+                                 }
+                             },
+                             onPress = {
+                                 if (pushToTalkMode) {
+                                     this.tryAwaitRelease()
+                                     isVisualizerPressed = false
+                                     if (isRecording) viewModel.stopRecording()
+                                 }
+                             },
+                             onTap = {
+                                 if (!pushToTalkMode) {
+                                     viewModel.toggleRecording()
+                                 }
+                             }
+                         )
+                     },
+                     backgroundColor = when (recordingState) {
+                         SonosViewModel.RecordingState.RECORDING -> Color(0xFFb54747)
+                         SonosViewModel.RecordingState.INITIALIZING, SonosViewModel.RecordingState.STOPPING -> Color(0xFFb57947)
+                         SonosViewModel.RecordingState.IDLE -> MaterialTheme.colorScheme.surfaceVariant
+                     }
+             )
 
             Spacer(modifier = Modifier.height(8.dp))
-
-            BottomControls(
-                isRecording = isRecording,
-                onToggleRecording = { viewModel.toggleRecording() },
-                enabled = viewModel.permissionGranted && selectedDevices.isNotEmpty(),
-                modifier = Modifier.padding(bottom = 24.dp)
-            )
         }
     }
 }
@@ -799,111 +880,123 @@ fun DeviceCard(
 @Composable
 fun AudioWaveformVisualizer(
     waveformData: List<Float>,
-    isRecording: Boolean,
+    recordingState: SonosViewModel.RecordingState,
     showDeviceSelectionHint: Boolean = false,
-    modifier: Modifier = Modifier
+    isPushToTalk: Boolean = false,
+    deviceSelectionMessage: String = "Select a device first",
+    modifier: Modifier = Modifier,
+    backgroundColor: Color = MaterialTheme.colorScheme.surfaceVariant
 ) {
     val primaryColor = MaterialTheme.colorScheme.primary
     val secondaryColor = MaterialTheme.colorScheme.secondary
-    val surfaceVariant = MaterialTheme.colorScheme.surfaceVariant
     val onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant
 
     Box(
         modifier = modifier
             .background(
-                color = surfaceVariant,
+                color = backgroundColor,
                 shape = MaterialTheme.shapes.medium
             ),
         contentAlignment = Alignment.Center
     ) {
-        if (!isRecording || waveformData.isEmpty()) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-                modifier = Modifier.fillMaxSize()
-            ) {
-                if (showDeviceSelectionHint) {
-                    Text(
-                        text = "Select a device first",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = onSurfaceVariant,
-                        modifier = Modifier.padding(bottom = 12.dp)
-                    )
+        when (recordingState) {
+            SonosViewModel.RecordingState.IDLE -> {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    if (showDeviceSelectionHint) {
+                        Text(
+                            text = deviceSelectionMessage,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = onSurfaceVariant,
+                            modifier = Modifier.padding(bottom = 12.dp)
+                        )
+                    }
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Mic,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = onSurfaceVariant
+                        )
+                        Text(
+                            text = when {
+                                isPushToTalk -> "Hold to stream"
+                                else -> "Press to start"
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = onSurfaceVariant
+                        )
+                    }
                 }
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+            }
+
+            SonosViewModel.RecordingState.INITIALIZING -> {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                    modifier = Modifier.fillMaxSize()
                 ) {
                     Text(
-                        text = if (isRecording) "Waiting for audio..." else "Press",
+                        text = "Initializing stream...",
                         style = MaterialTheme.typography.bodyMedium,
                         color = onSurfaceVariant
                     )
-                    Icon(
-                        imageVector = Icons.Default.Mic,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp),
-                        tint = onSurfaceVariant
-                    )
+                }
+            }
+
+            SonosViewModel.RecordingState.RECORDING -> {
+                if (waveformData.isEmpty()) {
+                    // Waveform data not yet available, show nothing
+                } else {
+                    Canvas(modifier = Modifier.fillMaxSize().padding(12.dp)) {
+                        val barCount = waveformData.size
+                        if (barCount == 0) return@Canvas
+
+                        val totalGapRatio = 0.2f
+                        val barWidthRatio = 1f - totalGapRatio
+                        val unitWidth = size.width / barCount
+                        val barWidth = unitWidth * barWidthRatio
+                        val gap = unitWidth * totalGapRatio
+                        val centerY = size.height / 2
+
+                        waveformData.forEachIndexed { index, amplitude ->
+                            val barHeight = (amplitude * size.height * 0.95f).coerceAtLeast(6f)
+                            val x = index * unitWidth + gap / 2
+                            val y = centerY - barHeight / 2
+                            
+                            val barColor = if (amplitude > 0.7f) secondaryColor else primaryColor
+
+                            drawRoundRect(
+                                color = barColor,
+                                topLeft = Offset(x, y),
+                                size = Size(barWidth, barHeight),
+                                cornerRadius = CornerRadius(barWidth / 2, barWidth / 2)
+                            )
+                        }
+                    }
+                }
+            }
+
+            SonosViewModel.RecordingState.STOPPING -> {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                    modifier = Modifier.fillMaxSize()
+                ) {
                     Text(
-                        text = "to start",
+                        text = "Stopping stream...",
                         style = MaterialTheme.typography.bodyMedium,
                         color = onSurfaceVariant
                     )
                 }
             }
-        } else {
-            Canvas(modifier = Modifier.fillMaxSize().padding(12.dp)) {
-                val barCount = waveformData.size
-                if (barCount == 0) return@Canvas
-
-                val totalGapRatio = 0.2f
-                val barWidthRatio = 1f - totalGapRatio
-                val unitWidth = size.width / barCount
-                val barWidth = unitWidth * barWidthRatio
-                val gap = unitWidth * totalGapRatio
-                val centerY = size.height / 2
-
-                waveformData.forEachIndexed { index, amplitude ->
-                    val barHeight = (amplitude * size.height * 0.95f).coerceAtLeast(6f)
-                    val x = index * unitWidth + gap / 2
-                    val y = centerY - barHeight / 2
-                    
-                    val barColor = if (amplitude > 0.7f) secondaryColor else primaryColor
-
-                    drawRoundRect(
-                        color = barColor,
-                        topLeft = Offset(x, y),
-                        size = Size(barWidth, barHeight),
-                        cornerRadius = CornerRadius(barWidth / 2, barWidth / 2)
-                    )
-                }
-            }
         }
-    }
-}
-
-@Composable
-fun GainSlider(
-    value: Int,
-    onValueChange: (Int) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    Column(modifier = modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text("Gain", style = MaterialTheme.typography.labelMedium)
-            Text("${value}x", style = MaterialTheme.typography.labelMedium)
-        }
-        Slider(
-            value = value.toFloat(),
-            onValueChange = { onValueChange(it.toInt()) },
-            valueRange = 1f..20f,
-            steps = 18,
-            modifier = Modifier.fillMaxWidth()
-        )
     }
 }
 
@@ -912,9 +1005,11 @@ fun SettingsContent(
     amplification: Int,
     announcementMode: Boolean,
     announcementVolume: Int,
+    pushToTalkMode: Boolean,
     onAmplificationChange: (Int) -> Unit,
     onAnnouncementModeChange: (Boolean) -> Unit,
     onAnnouncementVolumeChange: (Int) -> Unit,
+    onPushToTalkModeChange: (Boolean) -> Unit,
     onAddDummyDevices: () -> Unit = {}
 ) {
     Column(
@@ -947,44 +1042,67 @@ fun SettingsContent(
             )
         }
         
+        Column {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text("Announcement Mode", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        if (announcementMode) "Ducks playback when speaking" else "Overlays microphone audio",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = announcementMode,
+                    onCheckedChange = onAnnouncementModeChange
+                )
+            }
+            
+            // Announcement volume as sub-item
+            AnimatedVisibility(
+                visible = announcementMode,
+                enter = expandVertically(),
+                exit = shrinkVertically()
+            ) {
+                Column(modifier = Modifier.padding(top = 8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("Volume", style = MaterialTheme.typography.bodyMedium)
+                        Text("${announcementVolume}", style = MaterialTheme.typography.bodyMedium)
+                    }
+                    Slider(
+                        value = announcementVolume.toFloat(),
+                        onValueChange = { onAnnouncementVolumeChange(it.toInt()) },
+                        valueRange = 0f..100f,
+                        steps = 99,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        }
+        
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column {
-                Text("Announcement Mode", style = MaterialTheme.typography.bodyLarge)
+                Text("Push-to-Talk Mode", style = MaterialTheme.typography.bodyLarge)
                 Text(
-                    if (announcementMode) "Ducks playback when speaking" else "Overlays microphone audio",
+                    if (pushToTalkMode) "Hold visualizer to stream" else "Tap visualizer to toggle",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             Switch(
-                checked = announcementMode,
-                onCheckedChange = onAnnouncementModeChange
-            )
-        }
-        
-        Column {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text("Announcement Volume", style = MaterialTheme.typography.bodyLarge)
-                Text("${announcementVolume}", style = MaterialTheme.typography.bodyLarge)
-            }
-            Slider(
-                value = announcementVolume.toFloat(),
-                onValueChange = { onAnnouncementVolumeChange(it.toInt()) },
-                valueRange = 0f..100f,
-                steps = 99,
-                modifier = Modifier.fillMaxWidth()
-            )
-            Text(
-                "Volume level for announcements (0-100)",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                checked = pushToTalkMode,
+                onCheckedChange = onPushToTalkModeChange
             )
         }
          
@@ -1001,30 +1119,4 @@ fun SettingsContent(
     }
 }
 
-@Composable
-fun BottomControls(
-    isRecording: Boolean,
-    onToggleRecording: () -> Unit,
-    enabled: Boolean,
-    modifier: Modifier = Modifier
-) {
-    Column(
-        modifier = modifier.fillMaxWidth(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        FloatingActionButton(
-            onClick = onToggleRecording,
-            modifier = Modifier.size(72.dp),
-            containerColor = if (isRecording) Color.Red else MaterialTheme.colorScheme.primary,
-            contentColor = if (isRecording) Color.White else MaterialTheme.colorScheme.onPrimary,
-            elevation = FloatingActionButtonDefaults.elevation()
-        ) {
-            Icon(
-                imageVector = if (isRecording) Icons.Default.Stop else Icons.Default.Mic,
-                contentDescription = if (isRecording) "Stop streaming" else "Start streaming",
-                modifier = Modifier.size(32.dp)
-            )
-        }
-    }
-}
+
