@@ -1,5 +1,6 @@
 package org.crocophant.speech2sonos
 
+import android.annotation.SuppressLint
 import android.util.Log
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -18,26 +19,26 @@ import javax.net.ssl.X509TrustManager
 
 /**
  * Sonos AudioClip API client for announcement mode.
- * 
+ *
  * Uses WebSocket connection to port 1443 with the audioClip:1 namespace
  * to play audio clips with automatic volume ducking of current playback.
- * 
+ *
  * ## Implementation Sources:
- * 
+ *
  * - **sonos-websocket Python library** (Home Assistant):
  *   https://github.com/jjlawren/sonos-websocket/blob/main/sonos_websocket/websocket.py
  *   - API key, protocol header, and message format
  *   - Flow: empty command → get householdId → getGroups → loadAudioClip
- * 
+ *
  * - **Sonos Control API Documentation**:
  *   https://docs.sonos.com/reference/audioclip-loadaudioclip-playerid
  *   - audioClip namespace and loadAudioClip command
  *   - AUDIO_CLIP capability check
- * 
+ *
  * - **Home Assistant Sonos Integration**:
  *   https://github.com/home-assistant/core/blob/dev/homeassistant/components/sonos/media_player.py
  *   - announce parameter usage with volume
- * 
+ *
  * - **Sonos Groups API**:
  *   https://docs.sonos.com/reference/groups-objects
  *   - Player object structure with websocketUrl and capabilities
@@ -46,27 +47,45 @@ class SonosAudioClip {
 
     companion object {
         private const val TAG = "SonosAudioClip"
-        
+
         // API key from sonos-websocket library
         // Source: https://github.com/jjlawren/sonos-websocket/blob/main/sonos_websocket/websocket.py#L14
         private const val SONOS_API_KEY = "123e4567-e89b-12d3-a456-426655440000"
-        
+
         // WebSocket port for local Sonos API (mentioned in Home Assistant docs)
         // Source: https://www.home-assistant.io/integrations/sonos/#network-requirements
         private const val WEBSOCKET_PORT = 1443
-        
+
         // Protocol header from sonos-websocket library
         // Source: https://github.com/jjlawren/sonos-websocket/blob/main/sonos_websocket/websocket.py#L15
         private const val WEBSOCKET_PROTOCOL = "v1.api.smartspeaker.audio"
     }
 
+    @SuppressLint("CustomX509TrustManager")
     private val client = HttpClient(CIO) {
         install(WebSockets)
         engine {
             https {
+                // IMPORTANT: Sonos devices use self-signed certificates on port 1443 for the AudioClip API.
+                // Standard certificate validation fails with: CertPathValidatorException: Trust anchor for certification path not found.
+                // Since we're communicating with local network devices in a controlled environment,
+                // we bypass certificate validation here. This is acceptable for local network services
+                // and follows the pattern used by other Sonos client libraries (e.g., sonos-websocket).
                 trustManager = object : X509TrustManager {
-                    override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
-                    override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) {}
+                    @SuppressLint("TrustAllX509TrustManager")
+                    override fun checkClientTrusted(
+                        chain: Array<out X509Certificate>?,
+                        authType: String?
+                    ) {
+                    }
+
+                    @SuppressLint("TrustAllX509TrustManager")
+                    override fun checkServerTrusted(
+                        chain: Array<out X509Certificate>?,
+                        authType: String?
+                    ) {
+                    }
+
                     override fun getAcceptedIssuers(): Array<X509Certificate> = arrayOf()
                 }
             }
@@ -75,7 +94,7 @@ class SonosAudioClip {
 
     /**
      * Play an audio clip on the Sonos device with automatic ducking.
-     * 
+     *
      * @param device The Sonos device to play the clip on
      * @param streamUrl The URL of the audio to play
      * @param volume Optional volume level (0-100) for the announcement
@@ -117,7 +136,8 @@ class SonosAudioClip {
                         // Step 2: Get player ID for this device via getGroups
                         val playerId = getPlayerId(device.ipAddress, householdId)
                         if (playerId == null) {
-                            errorMessage = "Failed to get player ID (device may not support AUDIO_CLIP)"
+                            errorMessage =
+                                "Failed to get player ID (device may not support AUDIO_CLIP)"
                             return@webSocket
                         }
                         Log.d(TAG, "Got player ID: $playerId")
@@ -136,7 +156,7 @@ class SonosAudioClip {
             when {
                 completed == null -> Result.failure(Exception("WebSocket connection timeout"))
                 errorMessage != null -> Result.failure(Exception(errorMessage))
-                clipResponse != null -> Result.success(clipResponse!!)
+                clipResponse != null -> Result.success(clipResponse)
                 else -> Result.failure(Exception("Unknown error"))
             }
         } catch (e: Exception) {
@@ -148,7 +168,7 @@ class SonosAudioClip {
     /**
      * Get household ID by sending an empty command.
      * The Sonos device returns the householdId in the response even for invalid commands.
-     * 
+     *
      * Source: sonos-websocket get_household_id()
      * https://github.com/jjlawren/sonos-websocket/blob/main/sonos_websocket/websocket.py
      * "Note: This is an invalid command but returns the household ID anyway."
@@ -168,7 +188,7 @@ class SonosAudioClip {
             if (frame is Frame.Text) {
                 val responseText = frame.readText()
                 Log.d(TAG, "Received: $responseText")
-                
+
                 val response = JSONArray(responseText)
                 if (response.length() >= 1) {
                     val header = response.getJSONObject(0)
@@ -186,16 +206,19 @@ class SonosAudioClip {
 
     /**
      * Get player ID by calling getGroups and matching by IP address.
-     * 
+     *
      * Source: sonos-websocket get_player_id() and get_groups()
      * https://github.com/jjlawren/sonos-websocket/blob/main/sonos_websocket/websocket.py
-     * 
+     *
      * The player's websocketUrl contains its IP, which we match against.
      * We also verify the device has AUDIO_CLIP capability.
-     * 
+     *
      * API Reference: https://docs.sonos.com/reference/groups-objects
      */
-    private suspend fun DefaultClientWebSocketSession.getPlayerId(deviceIp: String, householdId: String): String? {
+    private suspend fun DefaultClientWebSocketSession.getPlayerId(
+        deviceIp: String,
+        householdId: String
+    ): String? {
         // Command format from sonos-websocket: namespace + command + householdId
         val command = JSONArray().apply {
             put(JSONObject().apply {
@@ -213,12 +236,12 @@ class SonosAudioClip {
             if (frame is Frame.Text) {
                 val responseText = frame.readText()
                 Log.d(TAG, "Received groups: $responseText")
-                
+
                 val response = JSONArray(responseText)
                 if (response.length() >= 2) {
                     val header = response.getJSONObject(0)
                     val data = response.getJSONObject(1)
-                    
+
                     if (header.optBoolean("success", false)) {
                         val players = data.optJSONArray("players")
                         if (players != null) {
@@ -253,12 +276,12 @@ class SonosAudioClip {
 
     /**
      * Send loadAudioClip command to play audio with automatic ducking.
-     * 
+     *
      * Source: sonos-websocket play_clip()
      * https://github.com/jjlawren/sonos-websocket/blob/main/sonos_websocket/websocket.py
-     * 
+     *
      * API Reference: https://docs.sonos.com/reference/audioclip-loadaudioclip-playerid
-     * 
+     *
      * The audioClip:1 namespace provides:
      * - Automatic volume ducking of current playback
      * - Priority system for multiple clips
@@ -298,15 +321,15 @@ class SonosAudioClip {
             if (frame is Frame.Text) {
                 val responseText = frame.readText()
                 Log.d(TAG, "AudioClip response: $responseText")
-                
+
                 val response = JSONArray(responseText)
                 if (response.length() >= 2) {
                     val header = response.getJSONObject(0)
                     val data = response.getJSONObject(1)
-                    
+
                     val success = header.optBoolean("success", false)
                     val clipId = data.optString("id", "")
-                    
+
                     return AudioClipResponse(
                         success = success,
                         clipId = clipId,
@@ -316,50 +339,13 @@ class SonosAudioClip {
                 break
             }
         }
-        
+
         return AudioClipResponse(success = false, error = "No response received")
     }
 
-    /**
-     * Check if a device supports the audioClip feature.
-     */
-    suspend fun supportsAudioClip(device: SonosDevice): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val wsUrl = "wss://${device.ipAddress}:$WEBSOCKET_PORT/websocket/api"
-            
-            var supported = false
-            
-            val completed = withTimeoutOrNull(5000L) {
-                try {
-                    client.webSocket(
-                        urlString = wsUrl,
-                        request = {
-                            headers.append("X-Sonos-Api-Key", SONOS_API_KEY)
-                            headers.append("Sec-WebSocket-Protocol", WEBSOCKET_PROTOCOL)
-                        }
-                    ) {
-                        val householdId = getHouseholdId()
-                        if (householdId != null) {
-                            val playerId = getPlayerId(device.ipAddress, householdId)
-                            supported = playerId != null
-                        }
-                    }
-                    true
-                } catch (e: Exception) {
-                    Log.e(TAG, "WebSocket error checking support", e)
-                    false
-                }
-            }
-            
-            completed == true && supported
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to check audioClip support", e)
-            false
-        }
-        }
-        }
+}
 
-        data class AudioClipResponse(
+data class AudioClipResponse(
     val success: Boolean,
     val clipId: String? = null,
     val error: String? = null

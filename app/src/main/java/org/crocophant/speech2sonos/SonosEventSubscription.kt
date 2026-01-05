@@ -46,10 +46,16 @@ class SonosEventSubscription(
 
     private var eventServer: ApplicationEngine? = null
     private var assignedPort: Int? = null
-    private val subscriptions = mutableMapOf<String, SubscriptionInfo>() // device IP -> subscription info
-    private val scope = CoroutineScope(Dispatchers.IO + Job() + CoroutineExceptionHandler { _, exception ->
-        Log.e(TAG, "Uncaught exception in event subscription scope: ${exception.message}", exception)
-    })
+    private val subscriptions =
+        mutableMapOf<String, SubscriptionInfo>() // device IP -> subscription info
+    private val scope =
+        CoroutineScope(Dispatchers.IO + Job() + CoroutineExceptionHandler { _, exception ->
+            Log.e(
+                TAG,
+                "Uncaught exception in event subscription scope: ${exception.message}",
+                exception
+            )
+        })
     private val sonosController = SonosController(context)
 
     data class SubscriptionInfo(
@@ -63,14 +69,14 @@ class SonosEventSubscription(
         return try {
             // Ensure any old server is stopped first
             stopEventServer()
-            
+
             val localIp = getLocalIpAddress() ?: run {
                 Log.e(TAG, "Could not determine local IP address")
                 return false
             }
 
             Log.d(TAG, "Starting event server on $localIp with port 0 (dynamic assignment)")
-            
+
             try {
                 // Use port 0 to let OS assign an available port
                 eventServer = embeddedServer(ServerCIO, port = 0) {
@@ -93,7 +99,10 @@ class SonosEventSubscription(
                                 // Find subscription by SID
                                 val subscriptionInfo = subscriptions.values.find { it.sid == sid }
                                 if (subscriptionInfo == null) {
-                                    Log.w(TAG, "Received notification for unknown subscription: $sid")
+                                    Log.w(
+                                        TAG,
+                                        "Received notification for unknown subscription: $sid"
+                                    )
                                     call.response.status(HttpStatusCode.BadRequest)
                                     call.respondText("Unknown SID")
                                     return@handle
@@ -114,9 +123,9 @@ class SonosEventSubscription(
                     }
                 }
                 eventServer?.start()
-                
+
                 // Get the actual assigned port from resolvedConnectors
-                val engine = eventServer as? io.ktor.server.engine.ApplicationEngine
+                val engine = eventServer
                 scope.launch {
                     try {
                         val connectors = engine?.resolvedConnectors() ?: emptyList()
@@ -124,15 +133,21 @@ class SonosEventSubscription(
                             assignedPort = connectors.first().port
                             Log.d(TAG, "Event server assigned port $assignedPort")
                         } else {
-                            Log.w(TAG, "Could not determine assigned port, using fallback ${EVENT_SERVER_PORT}")
+                            Log.w(
+                                TAG,
+                                "Could not determine assigned port, using fallback ${EVENT_SERVER_PORT}"
+                            )
                             assignedPort = EVENT_SERVER_PORT
                         }
                     } catch (e: Exception) {
-                        Log.w(TAG, "Error getting resolved connectors: ${e.message}, using fallback ${EVENT_SERVER_PORT}")
+                        Log.w(
+                            TAG,
+                            "Error getting resolved connectors: ${e.message}, using fallback ${EVENT_SERVER_PORT}"
+                        )
                         assignedPort = EVENT_SERVER_PORT
                     }
                 }
-                
+
                 Log.d(TAG, "Event server started successfully")
                 true
             } catch (e: Exception) {
@@ -150,7 +165,8 @@ class SonosEventSubscription(
     private fun parseAndHandleNotification(deviceIp: String, xmlContent: String) {
         try {
             // Parse the LastChange variable which contains the actual state changes
-            val lastChangeMatch = xmlContent.substringAfter("<LastChange>").substringBefore("</LastChange>")
+            val lastChangeMatch =
+                xmlContent.substringAfter("<LastChange>").substringBefore("</LastChange>")
             if (lastChangeMatch.isEmpty()) {
                 Log.v(TAG, "No LastChange in notification")
                 return
@@ -165,7 +181,8 @@ class SonosEventSubscription(
 
             // Check if CurrentTrackMetaData or TransportState changed
             if (decodedLastChange.contains("CurrentTrackMetaData") ||
-                decodedLastChange.contains("TransportState")) {
+                decodedLastChange.contains("TransportState")
+            ) {
 
                 Log.d(TAG, "Track or state change detected for device $deviceIp")
 
@@ -194,7 +211,8 @@ class SonosEventSubscription(
                 return false
             }
 
-            val subscriptionUrl = "http://${device.ipAddress}:${device.port}/MediaRenderer/AVTransport/Event"
+            val subscriptionUrl =
+                "http://${device.ipAddress}:${device.port}/MediaRenderer/AVTransport/Event"
             val port = assignedPort ?: EVENT_SERVER_PORT
             val callbackUrl = "http://$localIp:$port/notify"
 
@@ -260,7 +278,8 @@ class SonosEventSubscription(
     private suspend fun renewSubscription(device: SonosDevice) {
         try {
             val subInfo = subscriptions[device.ipAddress] ?: return
-            val subscriptionUrl = "http://${device.ipAddress}:${device.port}/MediaRenderer/AVTransport/Event"
+            val subscriptionUrl =
+                "http://${device.ipAddress}:${device.port}/MediaRenderer/AVTransport/Event"
 
             Log.d(TAG, "Renewing subscription to ${device.name}")
 

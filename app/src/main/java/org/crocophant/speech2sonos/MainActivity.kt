@@ -75,6 +75,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -86,7 +87,6 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import org.crocophant.speech2sonos.ui.theme.Speech2SonosTheme
-import androidx.core.net.toUri
 
 class MainActivity : ComponentActivity() {
 
@@ -105,7 +105,16 @@ class MainActivity : ComponentActivity() {
         }
 
     private val viewModel: SonosViewModel by lazy {
-        ViewModelProvider(this, SonosViewModelFactory(audioStreamer, sonosController, appSettings, sonosDiscovery.devices, application))[SonosViewModel::class.java]
+        ViewModelProvider(
+            this,
+            SonosViewModelFactory(
+                audioStreamer,
+                sonosController,
+                appSettings,
+                sonosDiscovery.devices,
+                application
+            )
+        )[SonosViewModel::class.java]
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -119,22 +128,23 @@ class MainActivity : ComponentActivity() {
             PackageManager.PERMISSION_GRANTED -> {
                 viewModel.onPermissionGranted()
             }
+
             else -> {
                 requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
             }
         }
 
         setContent {
-        Speech2SonosTheme {
-        Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-            SonosScreen(
-                modifier = Modifier.padding(innerPadding),
-                viewModel = viewModel,
-                onAddDummyDevices = { sonosDiscovery.addDummyDevices() },
-                onRefreshDiscovery = { refreshDiscovery() }
-            )
-        }
-        }
+            Speech2SonosTheme {
+                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
+                    SonosScreen(
+                        modifier = Modifier.padding(innerPadding),
+                        viewModel = viewModel,
+                        onAddDummyDevices = { sonosDiscovery.addDummyDevices() },
+                        onRefreshDiscovery = { refreshDiscovery() }
+                    )
+                }
+            }
         }
     }
 
@@ -147,7 +157,7 @@ class MainActivity : ComponentActivity() {
         super.onPause()
         sonosDiscovery.stopDiscovery()
     }
-    
+
     fun refreshDiscovery() {
         sonosDiscovery.restartDiscovery()
     }
@@ -163,7 +173,13 @@ class SonosViewModelFactory(
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(SonosViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")
-            return SonosViewModel(audioStreamer, sonosController, appSettings, discoveredDevices, application) as T
+            return SonosViewModel(
+                audioStreamer,
+                sonosController,
+                appSettings,
+                discoveredDevices,
+                application
+            ) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }
@@ -178,19 +194,21 @@ class SonosViewModel(
 ) : ViewModel() {
     private val _selectedDevices = MutableStateFlow<Set<SonosDevice>>(emptySet())
     val selectedDevices: StateFlow<Set<SonosDevice>> = _selectedDevices.asStateFlow()
-    
+
     private val _devicesWithNowPlaying = MutableStateFlow<List<SonosDevice>>(emptyList())
     val devicesWithNowPlaying: StateFlow<List<SonosDevice>> = _devicesWithNowPlaying.asStateFlow()
 
     enum class RecordingState { IDLE, INITIALIZING, RECORDING, STOPPING }
-    
+
     private val _recordingState = MutableStateFlow(RecordingState.IDLE)
     val recordingState: StateFlow<RecordingState> = _recordingState.asStateFlow()
-    
-    val isRecording: StateFlow<Boolean> = recordingState.map { it == RecordingState.RECORDING || it == RecordingState.INITIALIZING }.stateIn(viewModelScope, SharingStarted.Lazily, false)
+
+    val isRecording: StateFlow<Boolean> =
+        recordingState.map { it == RecordingState.RECORDING || it == RecordingState.INITIALIZING }
+            .stateIn(viewModelScope, SharingStarted.Lazily, false)
 
     val waveformData: StateFlow<List<Float>> = audioStreamer.waveformData
-    
+
     val amplification: StateFlow<Int> = appSettings.amplification
     val announcementMode: StateFlow<Boolean> = appSettings.announcementMode
     val announcementVolume: StateFlow<Int> = appSettings.announcementVolume
@@ -224,7 +242,7 @@ class SonosViewModel(
                 }
                 _devicesWithNowPlaying.value = updated
             }
-            
+
             // Try to start event server
             if (eventSubscription.startEventServer()) {
                 useEventSubscriptions = true
@@ -252,38 +270,41 @@ class SonosViewModel(
                             subscribedDevices.add(device.ipAddress)
                             Log.d("SonosViewModel", "Subscribed to ${device.name}")
                         } else {
-                            Log.w("SonosViewModel", "Failed to subscribe to ${device.name}, will use polling for this device")
+                            Log.w(
+                                "SonosViewModel",
+                                "Failed to subscribe to ${device.name}, will use polling for this device"
+                            )
                         }
                     }
                 }
             }
         }
     }
-    
+
     fun setAmplification(value: Int) {
         appSettings.setAmplification(value)
         audioStreamer.setAmplification(value)
     }
-    
+
     fun setAnnouncementMode(enabled: Boolean) {
         appSettings.setAnnouncementMode(enabled)
     }
-    
+
     fun setAnnouncementVolume(value: Int) {
         appSettings.setAnnouncementVolume(value)
     }
-    
+
     fun setPushToTalkMode(enabled: Boolean) {
         appSettings.setPushToTalkMode(enabled)
     }
-    
+
     init {
         // Sync initial amplification to AudioStreamer
         audioStreamer.setAmplification(appSettings.amplification.value)
-        
+
         // Initialize event subscriptions (try callback approach first)
         initializeEventSubscriptions()
-        
+
         // Initialize with discovered devices (only once)
         viewModelScope.launch {
             discoveredDevices.collect { devices ->
@@ -291,29 +312,39 @@ class SonosViewModel(
                 // Only update if the device list actually changed
                 val currentIps = _devicesWithNowPlaying.value.map { it.ipAddress }.toSet()
                 val newIps = devices.map { it.ipAddress }.toSet()
-                
+
                 if (currentIps != newIps) {
                     // Device list changed, update it (preserving now playing info for existing ones)
                     val mapped = devices.map { newDevice ->
-                        val existing = _devicesWithNowPlaying.value.find { it.ipAddress == newDevice.ipAddress }
+                        val existing =
+                            _devicesWithNowPlaying.value.find { it.ipAddress == newDevice.ipAddress }
                         if (existing != null) {
                             // Preserve existing now playing info
-                            Log.d("SonosViewModel", "Preserving now playing for ${newDevice.name}: '${existing.nowPlayingInfo.title}'")
+                            Log.d(
+                                "SonosViewModel",
+                                "Preserving now playing for ${newDevice.name}: '${existing.nowPlayingInfo.title}'"
+                            )
                             newDevice.copy(nowPlayingInfo = existing.nowPlayingInfo)
                         } else {
                             Log.d("SonosViewModel", "New device: ${newDevice.name}")
                             newDevice
                         }
                     }
-                    Log.d("SonosViewModel", "Device list changed, updating _devicesWithNowPlaying with ${mapped.size} devices")
+                    Log.d(
+                        "SonosViewModel",
+                        "Device list changed, updating _devicesWithNowPlaying with ${mapped.size} devices"
+                    )
                     _devicesWithNowPlaying.value = mapped
-                    
+
                     // Auto-select devices that were previously selected (if they're now discovered)
                     val savedIps = appSettings.getSelectedDeviceIPs()
                     if (savedIps.isNotEmpty()) {
                         val devicesToSelect = mapped.filter { it.ipAddress in savedIps }.toSet()
                         if (devicesToSelect.isNotEmpty()) {
-                            Log.d("SonosViewModel", "Restoring ${devicesToSelect.size} previously selected devices")
+                            Log.d(
+                                "SonosViewModel",
+                                "Restoring ${devicesToSelect.size} previously selected devices"
+                            )
                             _selectedDevices.value = devicesToSelect
                         }
                     }
@@ -322,7 +353,7 @@ class SonosViewModel(
                 }
             }
         }
-        
+
         // Polling as fallback - only poll devices that don't have event subscriptions
         viewModelScope.launch {
             while (true) {
@@ -330,13 +361,16 @@ class SonosViewModel(
                     val currentDevices = _devicesWithNowPlaying.value
                     if (currentDevices.isNotEmpty()) {
                         // Only poll devices that are NOT subscribed to events
-                        val devicesToPoll = currentDevices.filter { 
-                            it.ipAddress !in subscribedDevices 
+                        val devicesToPoll = currentDevices.filter {
+                            it.ipAddress !in subscribedDevices
                         }
-                        
+
                         if (devicesToPoll.isNotEmpty()) {
-                            Log.d("SonosViewModel", "Polling ${devicesToPoll.size} unsubscribed devices (${currentDevices.size - devicesToPoll.size} via events)")
-                            
+                            Log.d(
+                                "SonosViewModel",
+                                "Polling ${devicesToPoll.size} unsubscribed devices (${currentDevices.size - devicesToPoll.size} via events)"
+                            )
+
                             val updatedDevices = mutableListOf<SonosDevice>()
                             currentDevices.forEach { device ->
                                 if (device.ipAddress in subscribedDevices) {
@@ -346,7 +380,10 @@ class SonosViewModel(
                                     // Fallback polling for devices without subscriptions
                                     try {
                                         val info = sonosController.getNowPlaying(device)
-                                        Log.v("SonosViewModel", "Polled now playing for ${device.name}: '${info.title}'")
+                                        Log.v(
+                                            "SonosViewModel",
+                                            "Polled now playing for ${device.name}: '${info.title}'"
+                                        )
                                         updatedDevices.add(device.copy(nowPlayingInfo = info))
                                     } catch (e: Exception) {
                                         Log.e("SonosViewModel", "Failed to poll ${device.name}", e)
@@ -354,7 +391,7 @@ class SonosViewModel(
                                     }
                                 }
                             }
-                            
+
                             _devicesWithNowPlaying.value = updatedDevices.toList()
                         }
                     }
@@ -365,7 +402,7 @@ class SonosViewModel(
             }
         }
     }
-    
+
     override fun onCleared() {
         super.onCleared()
         if (::eventSubscription.isInitialized) {
@@ -400,7 +437,8 @@ class SonosViewModel(
 
         viewModelScope.launch {
             try {
-                val currentlyRecording = _recordingState.value == RecordingState.RECORDING || _recordingState.value == RecordingState.INITIALIZING
+                val currentlyRecording =
+                    _recordingState.value == RecordingState.RECORDING || _recordingState.value == RecordingState.INITIALIZING
                 if (currentlyRecording) {
                     stopRecording()
                 } else {
@@ -412,7 +450,7 @@ class SonosViewModel(
             }
         }
     }
-    
+
     fun startRecording() {
         if (!permissionGranted || _selectedDevices.value.isEmpty()) {
             return
@@ -427,7 +465,7 @@ class SonosViewModel(
             }
         }
     }
-    
+
     fun stopRecording() {
         _recordingState.value = RecordingState.STOPPING
         viewModelScope.launch {
@@ -459,17 +497,23 @@ class SonosViewModel(
         val useAnnouncement = appSettings.announcementMode.value
         val port = audioStreamer.assignedPort.value
         val streamUrl = "http://$ipAddress:$port/stream.wav"
-        
+
         _selectedDevices.value.forEach { device ->
             try {
                 if (useAnnouncement) {
                     // Use announcement mode with ducking
                     val volume = appSettings.announcementVolume.value
-                    val result = sonosController.playAnnouncementStream(device, ipAddress, port, volume = volume)
+                    val result = sonosController.playAnnouncementStream(
+                        device,
+                        ipAddress,
+                        port,
+                        volume = volume
+                    )
                     result.fold(
                         onSuccess = { response ->
                             if (!response.success) {
-                                _errorMessage.value = "Announce failed on ${device.name}: ${response.error}"
+                                _errorMessage.value =
+                                    "Announce failed on ${device.name}: ${response.error}"
                             }
                         },
                         onFailure = { e ->
@@ -488,7 +532,7 @@ class SonosViewModel(
 
     private suspend fun stopStreaming() {
         val useAnnouncement = appSettings.announcementMode.value
-        
+
         // Only stop device playback if not using announcement mode
         // In announcement mode, stopping the audio stream will naturally end the clip
         if (!useAnnouncement) {
@@ -529,25 +573,28 @@ fun SonosScreen(
     val pushToTalkMode by viewModel.pushToTalkMode.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val recordingState by viewModel.recordingState.collectAsState()
-    
+
     val noDeviceSelectedMessage = "Select a device first"
     val sheetState = rememberModalBottomSheetState()
     val scope = rememberCoroutineScope()
-    
+
     var isRefreshing by remember { mutableStateOf(false) }
     val pullRefreshState = rememberPullToRefreshState()
-    
+
     LaunchedEffect(isRefreshing) {
         if (isRefreshing) {
             onRefreshDiscovery()
             isRefreshing = false
         }
     }
-    
+
     LaunchedEffect(devices) {
         Log.d("SonosScreen", "devices updated: ${devices.size} devices")
         devices.forEach { device ->
-            Log.d("SonosScreen", "  - ${device.name}: title='${device.nowPlayingInfo.title}', artwork='${device.nowPlayingInfo.artworkUrl}'")
+            Log.d(
+                "SonosScreen",
+                "  - ${device.name}: title='${device.nowPlayingInfo.title}', artwork='${device.nowPlayingInfo.artworkUrl}'"
+            )
         }
     }
 
@@ -566,16 +613,16 @@ fun SonosScreen(
             sheetState = sheetState
         ) {
             SettingsContent(
-                 amplification = amplification,
-                 announcementMode = announcementMode,
-                 announcementVolume = announcementVolume,
-                 pushToTalkMode = pushToTalkMode,
-                 onAmplificationChange = { viewModel.setAmplification(it) },
-                 onAnnouncementModeChange = { viewModel.setAnnouncementMode(it) },
-                 onAnnouncementVolumeChange = { viewModel.setAnnouncementVolume(it) },
-                 onPushToTalkModeChange = { viewModel.setPushToTalkMode(it) },
-                 onAddDummyDevices = onAddDummyDevices
-             )
+                amplification = amplification,
+                announcementMode = announcementMode,
+                announcementVolume = announcementVolume,
+                pushToTalkMode = pushToTalkMode,
+                onAmplificationChange = { viewModel.setAmplification(it) },
+                onAnnouncementModeChange = { viewModel.setAnnouncementMode(it) },
+                onAnnouncementVolumeChange = { viewModel.setAnnouncementVolume(it) },
+                onPushToTalkModeChange = { viewModel.setPushToTalkMode(it) },
+                onAddDummyDevices = onAddDummyDevices
+            )
         }
     }
 
@@ -601,7 +648,10 @@ fun SonosScreen(
                     horizontalArrangement = Arrangement.spacedBy(4.dp),
                     modifier = Modifier.weight(1f)
                 ) {
-                    IconButton(onClick = { onRefreshDiscovery() }, modifier = Modifier.size(40.dp)) {
+                    IconButton(
+                        onClick = { onRefreshDiscovery() },
+                        modifier = Modifier.size(40.dp)
+                    ) {
                         Icon(Icons.Default.Refresh, contentDescription = "Refresh device discovery")
                     }
                     if (devices.isEmpty()) {
@@ -618,7 +668,7 @@ fun SonosScreen(
                         )
                     }
                 }
-                IconButton(onClick = { 
+                IconButton(onClick = {
                     scope.launch { sheetState.show() }
                 }) {
                     Icon(Icons.Default.Settings, contentDescription = "Settings")
@@ -656,48 +706,51 @@ fun SonosScreen(
             }
 
             // Interactive waveform visualizer - serves as play/record button
-             AudioWaveformVisualizer(
-                 waveformData = waveformData,
-                 recordingState = recordingState,
-                 showDeviceSelectionHint = selectedDevices.isEmpty(),
-                 isPushToTalk = pushToTalkMode,
-                 deviceSelectionMessage = noDeviceSelectedMessage,
-                 modifier = Modifier
-                     .fillMaxWidth(0.9f)
-                     .height(100.dp)
-                     .align(Alignment.CenterHorizontally)
-                     .pointerInput(pushToTalkMode, selectedDevices, noDeviceSelectedMessage) {
-                         detectTapGestures(
-                             onLongPress = {
-                                 if (pushToTalkMode) {
-                                     if (selectedDevices.isEmpty()) {
-                                         viewModel.viewModelScope.launch {
-                                             snackbarHostState.showSnackbar(noDeviceSelectedMessage)
-                                         }
-                                     } else {
-                                         if (!isRecording) viewModel.startRecording()
-                                     }
-                                 }
-                             },
-                             onPress = {
-                                 if (pushToTalkMode) {
-                                     this.tryAwaitRelease()
-                                     if (isRecording) viewModel.stopRecording()
-                                 }
-                             },
-                             onTap = {
-                                 if (!pushToTalkMode) {
-                                     viewModel.toggleRecording()
-                                 }
-                             }
-                         )
-                     },
-                     backgroundColor = when (recordingState) {
-                         SonosViewModel.RecordingState.RECORDING -> Color(0xFFb54747)
-                         SonosViewModel.RecordingState.INITIALIZING, SonosViewModel.RecordingState.STOPPING -> Color(0xFFb57947)
-                         SonosViewModel.RecordingState.IDLE -> MaterialTheme.colorScheme.surfaceVariant
-                     }
-             )
+            AudioWaveformVisualizer(
+                waveformData = waveformData,
+                recordingState = recordingState,
+                showDeviceSelectionHint = selectedDevices.isEmpty(),
+                isPushToTalk = pushToTalkMode,
+                deviceSelectionMessage = noDeviceSelectedMessage,
+                modifier = Modifier
+                    .fillMaxWidth(0.9f)
+                    .height(100.dp)
+                    .align(Alignment.CenterHorizontally)
+                    .pointerInput(pushToTalkMode, selectedDevices, noDeviceSelectedMessage) {
+                        detectTapGestures(
+                            onLongPress = {
+                                if (pushToTalkMode) {
+                                    if (selectedDevices.isEmpty()) {
+                                        viewModel.viewModelScope.launch {
+                                            snackbarHostState.showSnackbar(noDeviceSelectedMessage)
+                                        }
+                                    } else {
+                                        if (!isRecording) viewModel.startRecording()
+                                    }
+                                }
+                            },
+                            onPress = {
+                                if (pushToTalkMode) {
+                                    this.tryAwaitRelease()
+                                    if (isRecording) viewModel.stopRecording()
+                                }
+                            },
+                            onTap = {
+                                if (!pushToTalkMode) {
+                                    viewModel.toggleRecording()
+                                }
+                            }
+                        )
+                    },
+                backgroundColor = when (recordingState) {
+                    SonosViewModel.RecordingState.RECORDING -> Color(0xFFb54747)
+                    SonosViewModel.RecordingState.INITIALIZING, SonosViewModel.RecordingState.STOPPING -> Color(
+                        0xFFb57947
+                    )
+
+                    SonosViewModel.RecordingState.IDLE -> MaterialTheme.colorScheme.surfaceVariant
+                }
+            )
 
             Spacer(modifier = Modifier.height(8.dp))
         }
@@ -766,7 +819,7 @@ fun DeviceCard(
                     style = MaterialTheme.typography.headlineSmall,
                     modifier = Modifier.weight(1f)
                 )
-                
+
                 Checkbox(
                     checked = isSelected,
                     onCheckedChange = null
@@ -843,16 +896,22 @@ fun DeviceCard(
                             )
                         }
                     }
-                    
+
                     // Lyrics button
                     IconButton(
                         onClick = {
                             if (context != null) {
                                 // Remove text after dash (e.g., "- 2008 Remaster")
-                                val cleanTitle = device.nowPlayingInfo.title.split(" - ").first().trim()
+                                val cleanTitle =
+                                    device.nowPlayingInfo.title.split(" - ").first().trim()
                                 val query = "${device.nowPlayingInfo.artist} $cleanTitle".trim()
                                 Log.d("DeviceCard", "Searching Genius for: $query")
-                                val geniusUrl = "https://genius.com/search?q=${java.net.URLEncoder.encode(query, "UTF-8")}"
+                                val geniusUrl = "https://genius.com/search?q=${
+                                    java.net.URLEncoder.encode(
+                                        query,
+                                        "UTF-8"
+                                    )
+                                }"
                                 val intent = Intent(Intent.ACTION_VIEW, geniusUrl.toUri())
                                 context.startActivity(intent)
                             }
@@ -948,7 +1007,9 @@ fun AudioWaveformVisualizer(
                 if (waveformData.isEmpty()) {
                     // Waveform data not yet available, show nothing
                 } else {
-                    Canvas(modifier = Modifier.fillMaxSize().padding(12.dp)) {
+                    Canvas(modifier = Modifier
+                        .fillMaxSize()
+                        .padding(12.dp)) {
                         val barCount = waveformData.size
                         if (barCount == 0) return@Canvas
 
@@ -963,7 +1024,7 @@ fun AudioWaveformVisualizer(
                             val barHeight = (amplitude * size.height * 0.95f).coerceAtLeast(6f)
                             val x = index * unitWidth + gap / 2
                             val y = centerY - barHeight / 2
-                            
+
                             val barColor = if (amplitude > 0.7f) secondaryColor else primaryColor
 
                             drawRoundRect(
@@ -1013,7 +1074,7 @@ fun SettingsContent(
         verticalArrangement = Arrangement.spacedBy(24.dp)
     ) {
         Text("Settings", style = MaterialTheme.typography.headlineSmall)
-        
+
         Column {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -1035,7 +1096,7 @@ fun SettingsContent(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        
+
         Column {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -1055,7 +1116,7 @@ fun SettingsContent(
                     onCheckedChange = onAnnouncementModeChange
                 )
             }
-            
+
             // Announcement volume as sub-item
             AnimatedVisibility(
                 visible = announcementMode,
@@ -1080,7 +1141,7 @@ fun SettingsContent(
                 }
             }
         }
-        
+
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -1099,16 +1160,16 @@ fun SettingsContent(
                 onCheckedChange = onPushToTalkModeChange
             )
         }
-         
+
         Spacer(modifier = Modifier.height(24.dp))
-        
+
         OutlinedButton(
             onClick = onAddDummyDevices,
             modifier = Modifier.fillMaxWidth()
         ) {
             Text("Add Dummy Devices (Testing)")
         }
-        
+
         Spacer(modifier = Modifier.height(24.dp))
     }
 }

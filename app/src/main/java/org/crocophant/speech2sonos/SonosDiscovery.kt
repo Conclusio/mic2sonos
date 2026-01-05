@@ -18,7 +18,7 @@ data class SonosDevice(
  * Discovers Sonos speakers on the local network using mDNS (NSD).
  * Searches for _sonos._tcp services and emits discovered devices via [devices] StateFlow.
  */
-class SonosDiscovery(private val context: Context) {
+class SonosDiscovery(context: Context) {
 
     companion object {
         private const val TAG = "SonosDiscovery"
@@ -68,15 +68,19 @@ class SonosDiscovery(private val context: Context) {
             isDiscovering = false
         }
     }
-    
+
     private fun createResolveListener(): NsdManager.ResolveListener {
         return object : NsdManager.ResolveListener {
             override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                Log.e(TAG, "Resolve failed for ${serviceInfo.serviceName} with error code $errorCode")
+                Log.e(
+                    TAG,
+                    "Resolve failed for ${serviceInfo.serviceName} with error code $errorCode"
+                )
             }
 
             override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
-                val hostAddress = serviceInfo.host?.hostAddress?.takeIf { it.isNotEmpty() } ?: return
+                val hostAddress =
+                    serviceInfo.host?.hostAddress?.takeIf { it.isNotEmpty() } ?: return
                 val rawName = serviceInfo.serviceName
                 val displayName = if (rawName.contains("@")) {
                     rawName.substringAfter("@").trim()
@@ -88,7 +92,10 @@ class SonosDiscovery(private val context: Context) {
                     ipAddress = hostAddress,
                     port = SONOS_UPNP_PORT
                 )
-                Log.i(TAG, "Resolved device: ${device.name} at ${device.ipAddress}:${device.port} (mDNS port was ${serviceInfo.port})")
+                Log.i(
+                    TAG,
+                    "Resolved device: ${device.name} at ${device.ipAddress}:${device.port} (mDNS port was ${serviceInfo.port})"
+                )
                 val currentDevices = _devices.value
                 if (currentDevices.none { it.ipAddress == device.ipAddress }) {
                     _devices.value = currentDevices + device
@@ -104,7 +111,11 @@ class SonosDiscovery(private val context: Context) {
         }
         try {
             Log.d(TAG, "Starting discovery")
-            nsdManager.discoverServices("_sonos._tcp.", NsdManager.PROTOCOL_DNS_SD, discoveryListener)
+            nsdManager.discoverServices(
+                "_sonos._tcp.",
+                NsdManager.PROTOCOL_DNS_SD,
+                discoveryListener
+            )
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start discovery", e)
         }
@@ -122,18 +133,18 @@ class SonosDiscovery(private val context: Context) {
             Log.e(TAG, "Failed to stop discovery", e)
         }
     }
-    
+
     fun restartDiscovery() {
         Log.d(TAG, "Restarting discovery")
         stopDiscovery()
         try {
             Thread.sleep(100)
-        } catch (e: InterruptedException) {
+        } catch (_: InterruptedException) {
             Log.w(TAG, "Interrupted during restart delay")
         }
         startDiscovery()
     }
-    
+
     fun addDummyDevices() {
         Log.d(TAG, "Adding dummy devices for testing")
         val currentDevices = _devices.value

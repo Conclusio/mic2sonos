@@ -48,7 +48,8 @@ class SonosNowPlaying {
 
     private suspend fun getPositionInfo(device: SonosDevice): String {
         val url = "http://${device.ipAddress}:${device.port}/MediaRenderer/AVTransport/Control"
-        val body = """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+        val body =
+            """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
     <s:Body>
         <u:GetPositionInfo xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
             <InstanceID>0</InstanceID>
@@ -58,7 +59,10 @@ class SonosNowPlaying {
 
         return try {
             val response = client.post(url) {
-                header("SOAPACTION", "\"urn:schemas-upnp-org:service:AVTransport:1#GetPositionInfo\"")
+                header(
+                    "SOAPACTION",
+                    "\"urn:schemas-upnp-org:service:AVTransport:1#GetPositionInfo\""
+                )
                 contentType(ContentType.Text.Xml)
                 setBody(body)
             }
@@ -72,7 +76,10 @@ class SonosNowPlaying {
     private fun parseMetadata(responseBody: String, device: SonosDevice): NowPlayingInfo {
         try {
             // Extract TrackMetaData using regex first
-            val metadataMatch = Regex("<TrackMetaData>(.*?)</TrackMetaData>", RegexOption.DOT_MATCHES_ALL).find(responseBody)
+            val metadataMatch =
+                Regex("<TrackMetaData>(.*?)</TrackMetaData>", RegexOption.DOT_MATCHES_ALL).find(
+                    responseBody
+                )
             if (metadataMatch == null) {
                 return NowPlayingInfo()
             }
@@ -88,15 +95,14 @@ class SonosNowPlaying {
                 java.io.ByteArrayInputStream(metadataXml.toByteArray(Charsets.UTF_8))
             )
 
-            val itemElement = doc.getElementsByTagName("item").item(0) as? Element
-            if (itemElement == null) {
-                return NowPlayingInfo()
-            }
+            val itemElement =
+                doc.getElementsByTagName("item").item(0) as? Element ?: return NowPlayingInfo()
 
             val title = itemElement.getElementsByTagName("dc:title").item(0)?.textContent ?: ""
             val artist = itemElement.getElementsByTagName("dc:creator").item(0)?.textContent ?: ""
             val album = itemElement.getElementsByTagName("upnp:album").item(0)?.textContent ?: ""
-            var albumArtUri = itemElement.getElementsByTagName("upnp:albumArtURI").item(0)?.textContent ?: ""
+            var albumArtUri =
+                itemElement.getElementsByTagName("upnp:albumArtURI").item(0)?.textContent ?: ""
 
             // Convert relative URL to absolute if needed
             if (albumArtUri.isNotEmpty() && !albumArtUri.startsWith("http")) {

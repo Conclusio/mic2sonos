@@ -31,29 +31,35 @@ class SonosController(private val context: Context) {
             requestTimeout = 10000
         }
     }
-    
+
     private val audioClip = SonosAudioClip()
     private val nowPlaying = SonosNowPlaying()
 
-    suspend fun play(device: SonosDevice, streamUrl: String, title: String = "Live Microphone", forceRadio: Boolean = true) {
+    suspend fun play(
+        device: SonosDevice,
+        streamUrl: String,
+        title: String = "Live Microphone",
+        forceRadio: Boolean = true
+    ) {
         val url = "http://${device.ipAddress}:${device.port}/MediaRenderer/AVTransport/Control"
-        
+
         val escapedTitle = title
             .replace("&", "&amp;")
             .replace("<", "&lt;")
             .replace(">", "&gt;")
-        
+
         // SoCo-style metadata for radio streams
         // Note: This will be XML-escaped when embedded in SOAP body
-        val metadataRaw = """<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"><item id="R:0/0/0" parentID="R:0/0" restricted="true"><dc:title>$escapedTitle</dc:title><upnp:class>object.item.audioItem.audioBroadcast</upnp:class><desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">SA_RINCON65031_</desc></item></DIDL-Lite>"""
-        
+        val metadataRaw =
+            """<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"><item id="R:0/0/0" parentID="R:0/0" restricted="true"><dc:title>$escapedTitle</dc:title><upnp:class>object.item.audioItem.audioBroadcast</upnp:class><desc id="cdudn" nameSpace="urn:schemas-rinconnetworks-com:metadata-1-0/">SA_RINCON65031_</desc></item></DIDL-Lite>"""
+
         // XML-escape the metadata for embedding in SOAP body
         val metadata = metadataRaw
             .replace("&", "&amp;")
             .replace("<", "&lt;")
             .replace(">", "&gt;")
             .replace("\"", "&quot;")
-        
+
         // For AAC streams, use aac:// scheme; for MP3 streams use x-rincon-mp3radio://
         // Check if it's an AAC stream based on file extension
         val isAacStream = streamUrl.contains(".aac")
@@ -72,12 +78,13 @@ class SonosController(private val context: Context) {
         } else {
             streamUrl
         }
-        
+
         Log.d(TAG, "Original URI: $streamUrl")
         Log.d(TAG, "Actual URI sent to Sonos: $actualUri")
         Log.d(TAG, "Metadata: $metadata")
-        
-        val setAVTransportURIBody = """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+
+        val setAVTransportURIBody =
+            """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
     <s:Body>
         <u:SetAVTransportURI xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
             <InstanceID>0</InstanceID>
@@ -91,7 +98,8 @@ class SonosController(private val context: Context) {
             try {
                 // First, stop any current playback
                 Log.d(TAG, "Stopping current playback on ${device.name}")
-                val stopBody = """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+                val stopBody =
+                    """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
     <s:Body>
         <u:Stop xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
             <InstanceID>0</InstanceID>
@@ -107,10 +115,13 @@ class SonosController(private val context: Context) {
                 } catch (e: Exception) {
                     Log.d(TAG, "Stop failed (may be already stopped): ${e.message}")
                 }
-                
+
                 Log.d(TAG, "Setting AVTransport URI to $actualUri for device ${device.name}")
                 val setUriResponse = client.post(url) {
-                    header("SOAPACTION", "\"urn:schemas-upnp-org:service:AVTransport:1#SetAVTransportURI\"")
+                    header(
+                        "SOAPACTION",
+                        "\"urn:schemas-upnp-org:service:AVTransport:1#SetAVTransportURI\""
+                    )
                     contentType(ContentType.Text.Xml)
                     setBody(setAVTransportURIBody)
                 }
@@ -118,7 +129,8 @@ class SonosController(private val context: Context) {
                 Log.i(TAG, "SetAVTransportURI response status: ${setUriResponse.status}")
                 Log.i(TAG, "SetAVTransportURI response body: $setUriResponseBody")
 
-                val playBody = """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+                val playBody =
+                    """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
     <s:Body>
         <u:Play xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
             <InstanceID>0</InstanceID>
@@ -134,23 +146,23 @@ class SonosController(private val context: Context) {
                     setBody(playBody)
                 }
                 Log.i(TAG, "Successfully started playback on ${device.name}")
-                
+
                 // Check transport state to see if Sonos reports any errors
                 kotlinx.coroutines.delay(500)
                 var transportInfo = getTransportInfo(device)
                 Log.i(TAG, "Transport state at 0.5s: $transportInfo")
-                
+
                 // Also check what URI is actually set
                 var mediaInfo = getMediaInfo(device)
                 Log.i(TAG, "Media URI at 0.5s: $mediaInfo")
-                
+
                 // Check again after more time
                 kotlinx.coroutines.delay(2000)
                 transportInfo = getTransportInfo(device)
                 Log.i(TAG, "Transport state at 2.5s: $transportInfo")
                 mediaInfo = getMediaInfo(device)
                 Log.i(TAG, "Media URI at 2.5s: $mediaInfo")
-                
+
                 // Check volume
                 val volumeInfo = getVolume(device)
                 Log.i(TAG, "Current volume: $volumeInfo")
@@ -160,10 +172,11 @@ class SonosController(private val context: Context) {
             }
         }
     }
-    
+
     suspend fun getVolume(device: SonosDevice): String {
         val url = "http://${device.ipAddress}:${device.port}/MediaRenderer/RenderingControl/Control"
-        val body = """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+        val body =
+            """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
     <s:Body>
         <u:GetVolume xmlns:u="urn:schemas-upnp-org:service:RenderingControl:1">
             <InstanceID>0</InstanceID>
@@ -175,7 +188,10 @@ class SonosController(private val context: Context) {
         return withContext(Dispatchers.IO) {
             try {
                 val response = client.post(url) {
-                    header("SOAPACTION", "\"urn:schemas-upnp-org:service:RenderingControl:1#GetVolume\"")
+                    header(
+                        "SOAPACTION",
+                        "\"urn:schemas-upnp-org:service:RenderingControl:1#GetVolume\""
+                    )
                     contentType(ContentType.Text.Xml)
                     setBody(body)
                 }
@@ -188,10 +204,11 @@ class SonosController(private val context: Context) {
             }
         }
     }
-    
+
     suspend fun getMediaInfo(device: SonosDevice): String {
         val url = "http://${device.ipAddress}:${device.port}/MediaRenderer/AVTransport/Control"
-        val body = """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+        val body =
+            """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
     <s:Body>
         <u:GetMediaInfo xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
             <InstanceID>0</InstanceID>
@@ -202,7 +219,10 @@ class SonosController(private val context: Context) {
         return withContext(Dispatchers.IO) {
             try {
                 val response = client.post(url) {
-                    header("SOAPACTION", "\"urn:schemas-upnp-org:service:AVTransport:1#GetMediaInfo\"")
+                    header(
+                        "SOAPACTION",
+                        "\"urn:schemas-upnp-org:service:AVTransport:1#GetMediaInfo\""
+                    )
                     contentType(ContentType.Text.Xml)
                     setBody(body)
                 }
@@ -218,10 +238,11 @@ class SonosController(private val context: Context) {
             }
         }
     }
-    
+
     suspend fun getTransportInfo(device: SonosDevice): String {
         val url = "http://${device.ipAddress}:${device.port}/MediaRenderer/AVTransport/Control"
-        val body = """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+        val body =
+            """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
     <s:Body>
         <u:GetTransportInfo xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
             <InstanceID>0</InstanceID>
@@ -232,7 +253,10 @@ class SonosController(private val context: Context) {
         return withContext(Dispatchers.IO) {
             try {
                 val response = client.post(url) {
-                    header("SOAPACTION", "\"urn:schemas-upnp-org:service:AVTransport:1#GetTransportInfo\"")
+                    header(
+                        "SOAPACTION",
+                        "\"urn:schemas-upnp-org:service:AVTransport:1#GetTransportInfo\""
+                    )
                     contentType(ContentType.Text.Xml)
                     setBody(body)
                 }
@@ -246,38 +270,11 @@ class SonosController(private val context: Context) {
         }
     }
 
-    suspend fun playTestAudio(device: SonosDevice) {
-        // HTTPS URLs work directly without forceRadio
-        val testUrl = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3"
-        play(device, testUrl, "Test Audio", forceRadio = false)
-    }
-    
-    suspend fun playLocalTest(device: SonosDevice, localIp: String) {
-        // Real-time streaming with amplification
-        val testUrl = "http://$localIp:8080/stream.wav"
-        Log.i(TAG, "Starting real-time stream: $testUrl")
-        play(device, testUrl, "Live Microphone", forceRadio = false)
-    }
-    
-    suspend fun playStaticTest(device: SonosDevice, localIp: String) {
-        // Mic audio buffer test - amplified 10x
-        val testUrl = "http://$localIp:8080/mic.wav"
-        Log.i(TAG, "Testing with amplified mic WAV: $testUrl")
-        play(device, testUrl, "Mic Test", forceRadio = false)
-    }
-    
-    suspend fun playHlsStream(device: SonosDevice, localIp: String) {
-        // HLS stream with m3u8 playlist - Sonos has excellent HLS support
-        val hlsUrl = "http://$localIp:8080/live.m3u8"
-        Log.i(TAG, "Starting HLS stream: $hlsUrl")
-        play(device, hlsUrl, "Live Microphone", forceRadio = false)
-    }
-    
     /**
      * Play audio as an announcement with automatic ducking.
      * Uses the Sonos audioClip API which ducks current playback
      * and restores it after the clip finishes.
-     * 
+     *
      * @param device The Sonos device to announce on
      * @param streamUrl The URL of the audio stream to play
      * @param volume Optional announcement volume (0-100), doesn't affect music volume
@@ -291,17 +288,22 @@ class SonosController(private val context: Context) {
         Log.i(TAG, "Playing announcement on ${device.name}: $streamUrl (volume: $volume)")
         return audioClip.playAudioClip(device, streamUrl, volume)
     }
-    
+
     /**
      * Play live microphone stream as an announcement.
      * The currently playing music will be ducked and restored after streaming stops.
      */
-    suspend fun playAnnouncementStream(device: SonosDevice, localIp: String, port: Int, volume: Int? = null): Result<AudioClipResponse> {
+    suspend fun playAnnouncementStream(
+        device: SonosDevice,
+        localIp: String,
+        port: Int,
+        volume: Int? = null
+    ): Result<AudioClipResponse> {
         val streamUrl = "http://$localIp:$port/stream.wav"
         Log.i(TAG, "Starting announcement stream: $streamUrl")
         return playAnnouncement(device, streamUrl, volume)
     }
-    
+
     /**
      * Get currently playing track information from the device.
      */
@@ -311,7 +313,8 @@ class SonosController(private val context: Context) {
 
     suspend fun stop(device: SonosDevice) {
         val url = "http://${device.ipAddress}:${device.port}/MediaRenderer/AVTransport/Control"
-        val stopBody = """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+        val stopBody =
+            """<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
     <s:Body>
         <u:Stop xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
             <InstanceID>0</InstanceID>
@@ -340,7 +343,7 @@ class SonosController(private val context: Context) {
             while (interfaces.hasMoreElements()) {
                 val networkInterface = interfaces.nextElement()
                 if (networkInterface.isLoopback || !networkInterface.isUp) continue
-                
+
                 val addresses = networkInterface.inetAddresses
                 while (addresses.hasMoreElements()) {
                     val address = addresses.nextElement()
@@ -353,9 +356,10 @@ class SonosController(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "Error getting IP address via NetworkInterface", e)
         }
-        
+
         try {
-            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            val wifiManager =
+                context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
             val wifiInfo = wifiManager.connectionInfo
             val ipAddressStr = wifiInfo.ipAddress.let { ipInt ->
                 if (ipInt != 0) {
@@ -375,7 +379,7 @@ class SonosController(private val context: Context) {
         } catch (e: Exception) {
             Log.e(TAG, "Error getting IP address via WifiManager", e)
         }
-        
+
         Log.w(TAG, "Could not determine device IP address")
         return null
     }
