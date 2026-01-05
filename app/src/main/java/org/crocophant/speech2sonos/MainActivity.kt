@@ -87,6 +87,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import org.crocophant.speech2sonos.ui.theme.Speech2SonosTheme
+import org.crocophant.speech2sonos.BuildConfig
 
 class MainActivity : ComponentActivity() {
 
@@ -1163,15 +1164,15 @@ fun SettingsContent(
 
         Spacer(modifier = Modifier.height(24.dp))
 
-        OutlinedButton(
-            onClick = onAddDummyDevices,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Add Dummy Devices (Testing)")
+        if (BuildConfig.DEBUG) {
+            OutlinedButton(
+                onClick = onAddDummyDevices,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Add Dummy Devices (Testing)")
+            }
         }
 
         Spacer(modifier = Modifier.height(24.dp))
     }
 }
-
-
