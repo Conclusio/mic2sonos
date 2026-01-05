@@ -34,7 +34,7 @@ import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Notes
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.foundation.basicMarquee
@@ -866,8 +866,8 @@ fun DeviceCard(
                         modifier = Modifier.size(40.dp)
                     ) {
                         Icon(
-                            imageVector = Icons.Filled.MoreVert,
-                            contentDescription = "More options",
+                            imageVector = Icons.Filled.Notes,
+                            contentDescription = "View lyrics on Genius",
                             modifier = Modifier.size(20.dp)
                         )
                     }
