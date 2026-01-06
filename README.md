@@ -45,3 +45,7 @@ Stream microphone audio to Sonos speakers on your local network.
 - **Min SDK**: Android 9 (for HTTP cleartext traffic to local devices)
 - **Sonos Ports**: 1400 (UPnP), 8888 (event subscriptions)
 - **Local Server Ports**: 8080 (audio streaming)
+
+## Notes
+
+Created with the help of [Sourcegraph's AmpCode](https://ampcode.com/).
