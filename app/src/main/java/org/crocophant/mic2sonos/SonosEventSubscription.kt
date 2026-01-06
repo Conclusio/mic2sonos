@@ -9,7 +9,8 @@ import io.ktor.client.request.header
 import io.ktor.client.request.request
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
-import io.ktor.server.engine.ApplicationEngine
+import io.ktor.server.cio.CIOApplicationEngine
+import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.request.header
 import io.ktor.server.request.httpMethod
@@ -44,7 +45,7 @@ class SonosEventSubscription(
         private const val EVENT_SERVER_PORT = 8888
     }
 
-    private var eventServer: ApplicationEngine? = null
+    private var eventServer: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
     private var assignedPort: Int? = null
     private val subscriptions =
         mutableMapOf<String, SubscriptionInfo>() // device IP -> subscription info
@@ -125,10 +126,9 @@ class SonosEventSubscription(
                 eventServer?.start()
 
                 // Get the actual assigned port from resolvedConnectors
-                val engine = eventServer
                 scope.launch {
                     try {
-                        val connectors = engine?.resolvedConnectors() ?: emptyList()
+                        val connectors = eventServer?.engine?.resolvedConnectors() ?: emptyList()
                         if (connectors.isNotEmpty()) {
                             assignedPort = connectors.first().port
                             Log.d(TAG, "Event server assigned port $assignedPort")

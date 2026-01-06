@@ -12,7 +12,8 @@ import io.ktor.http.ContentType
 import io.ktor.server.application.call
 import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
-import io.ktor.server.engine.ApplicationEngine
+import io.ktor.server.cio.CIOApplicationEngine
+import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.response.header
@@ -59,7 +60,7 @@ class AudioStreamer {
     }
 
     private var audioRecord: AudioRecord? = null
-    private var server: ApplicationEngine? = null
+    private var server: EmbeddedServer<CIOApplicationEngine, CIOApplicationEngine.Configuration>? = null
     private var mediaCodec: MediaCodec? = null
     private var serverJob: Job? = null
     private var recordingJob: Job? = null
@@ -629,11 +630,10 @@ class AudioStreamer {
 
         serverJob = scope.launch {
             try {
-                val engine = server as? ApplicationEngine
                 // Get resolved port after server starts
                 scope.launch {
                     try {
-                        val connectors = engine?.resolvedConnectors() ?: emptyList()
+                        val connectors = server?.engine?.resolvedConnectors() ?: emptyList()
                         if (connectors.isNotEmpty()) {
                             _assignedPort.value = connectors.first().port
                             Log.d(TAG, "Audio server assigned port ${_assignedPort.value}")
