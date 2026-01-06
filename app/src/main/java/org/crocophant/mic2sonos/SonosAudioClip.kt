@@ -1,6 +1,7 @@
 package org.crocophant.mic2sonos
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.util.Log
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -43,7 +44,7 @@ import javax.net.ssl.X509TrustManager
  *   https://docs.sonos.com/reference/groups-objects
  *   - Player object structure with websocketUrl and capabilities
  */
-class SonosAudioClip {
+class SonosAudioClip(private val context: Context) {
 
     companion object {
         private const val TAG = "SonosAudioClip"
@@ -98,16 +99,12 @@ class SonosAudioClip {
      * @param device The Sonos device to play the clip on
      * @param streamUrl The URL of the audio to play
      * @param volume Optional volume level (0-100) for the announcement
-     * @param appId Application identifier for the clip
-     * @param name Human-readable name for the clip source
      * @return Result containing success status and any error message
      */
     suspend fun playAudioClip(
         device: SonosDevice,
         streamUrl: String,
         volume: Int? = null,
-        appId: String = "org.crocophant.mic2sonos",
-        name: String = "Mic2Sonos"
     ): Result<AudioClipResponse> = withContext(Dispatchers.IO) {
         try {
             val wsUrl = "wss://${device.ipAddress}:$WEBSOCKET_PORT/websocket/api"
@@ -143,6 +140,8 @@ class SonosAudioClip {
                         Log.d(TAG, "Got player ID: $playerId")
 
                         // Step 3: Send loadAudioClip command
+                        val appId = context.packageName
+                        val name = appId.substringAfterLast('.')
                         clipResponse = loadAudioClip(playerId, streamUrl, volume, appId, name)
                     }
                     true

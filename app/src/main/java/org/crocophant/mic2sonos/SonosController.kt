@@ -32,7 +32,7 @@ class SonosController(private val context: Context) {
         }
     }
 
-    private val audioClip = SonosAudioClip()
+    private val audioClip = SonosAudioClip(context)
     private val nowPlaying = SonosNowPlaying()
 
     suspend fun play(
