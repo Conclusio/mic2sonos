@@ -5,13 +5,13 @@ plugins {
 }
 
 android {
-    namespace = "org.crocophant.speech2sonos"
+    namespace = "org.crocophant.mic2sonos"
     compileSdk {
         version = release(36)
     }
 
     defaultConfig {
-        applicationId = "org.crocophant.speech2sonos"
+        applicationId = "org.crocophant.mic2sonos"
         minSdk = 31
         targetSdk = 36
         versionCode = 1

@@ -1,4 +1,4 @@
-package org.crocophant.speech2sonos
+package org.crocophant.mic2sonos
 
 import android.annotation.SuppressLint
 import android.util.Log
@@ -106,8 +106,8 @@ class SonosAudioClip {
         device: SonosDevice,
         streamUrl: String,
         volume: Int? = null,
-        appId: String = "org.crocophant.speech2sonos",
-        name: String = "Speech2Sonos"
+        appId: String = "org.crocophant.mic2sonos",
+        name: String = "Mic2Sonos"
     ): Result<AudioClipResponse> = withContext(Dispatchers.IO) {
         try {
             val wsUrl = "wss://${device.ipAddress}:$WEBSOCKET_PORT/websocket/api"

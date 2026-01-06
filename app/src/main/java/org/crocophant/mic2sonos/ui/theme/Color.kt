@@ -1,4 +1,4 @@
-package org.crocophant.speech2sonos.ui.theme
+package org.crocophant.mic2sonos.ui.theme
 
 import androidx.compose.ui.graphics.Color
 

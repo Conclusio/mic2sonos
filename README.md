@@ -1,4 +1,4 @@
-# Speech2Sonos
+# Mic2Sonos
 
 Stream microphone audio to Sonos speakers on your local network.
 

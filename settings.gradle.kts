@@ -21,5 +21,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Speech2Sonos"
+rootProject.name = "Mic2Sonos"
 include(":app")

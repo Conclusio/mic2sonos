@@ -1,4 +1,4 @@
-package org.crocophant.speech2sonos
+package org.crocophant.mic2sonos
 
 import android.Manifest
 import android.content.Intent
@@ -86,8 +86,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import org.crocophant.speech2sonos.ui.theme.Speech2SonosTheme
-import org.crocophant.speech2sonos.BuildConfig
+import org.crocophant.mic2sonos.ui.theme.Mic2SonosTheme
+import org.crocophant.mic2sonos.BuildConfig
 
 class MainActivity : ComponentActivity() {
 
@@ -136,7 +136,7 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            Speech2SonosTheme {
+            Mic2SonosTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
                     SonosScreen(
                         modifier = Modifier.padding(innerPadding),

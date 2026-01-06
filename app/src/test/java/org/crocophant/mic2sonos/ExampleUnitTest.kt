@@ -1,4 +1,4 @@
-package org.crocophant.speech2sonos
+package org.crocophant.mic2sonos
 
 import org.junit.Test
 

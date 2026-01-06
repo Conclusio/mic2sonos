@@ -1,4 +1,4 @@
-package org.crocophant.speech2sonos.ui.theme
+package org.crocophant.mic2sonos.ui.theme
 
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
@@ -32,7 +32,7 @@ private val LightColorScheme = lightColorScheme(
 )
 
 @Composable
-fun Speech2SonosTheme(
+fun Mic2SonosTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     // Dynamic color is available on Android 12+
     dynamicColor: Boolean = true,
