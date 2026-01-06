@@ -1,6 +1,5 @@
 package org.crocophant.mic2sonos
 
-import android.annotation.SuppressLint
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaCodec
@@ -9,7 +8,6 @@ import android.media.MediaFormat
 import android.media.MediaRecorder
 import android.util.Log
 import io.ktor.http.ContentType
-import io.ktor.server.application.call
 import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
 import io.ktor.server.cio.CIOApplicationEngine
@@ -121,7 +119,6 @@ class AudioStreamer {
 
     private val isRunning = AtomicBoolean(false)
 
-    @SuppressLint("MissingPermission")
     suspend fun start(): Boolean = withContext(Dispatchers.IO) {
         if (isRunning.get()) {
             Log.w(TAG, "Already running")
@@ -150,13 +147,19 @@ class AudioStreamer {
             mediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC)
             mediaCodec?.configure(mediaFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
 
-            audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
-                sampleRate,
-                channelConfig,
-                audioFormat,
-                actualBufferSize
-            )
+            try {
+                audioRecord = AudioRecord(
+                    MediaRecorder.AudioSource.MIC,
+                    sampleRate,
+                    channelConfig,
+                    audioFormat,
+                    actualBufferSize
+                )
+            } catch (e: SecurityException) {
+                Log.e(TAG, "Missing RECORD_AUDIO permission", e)
+                cleanup()
+                return@withContext false
+            }
 
             if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
                 Log.e(TAG, "AudioRecord failed to initialize")

@@ -1,7 +1,6 @@
 package org.crocophant.mic2sonos
 
 import android.content.Context
-import android.net.wifi.WifiManager
 import android.util.Log
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.cio.CIO
@@ -13,8 +12,6 @@ import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.net.Inet4Address
-import java.net.NetworkInterface
 
 /**
  * Controls Sonos device playback via SOAP commands over port 1400.
@@ -337,50 +334,5 @@ class SonosController(private val context: Context) {
         }
     }
 
-    fun getDeviceIpAddress(): String? {
-        try {
-            val interfaces = NetworkInterface.getNetworkInterfaces()
-            while (interfaces.hasMoreElements()) {
-                val networkInterface = interfaces.nextElement()
-                if (networkInterface.isLoopback || !networkInterface.isUp) continue
-
-                val addresses = networkInterface.inetAddresses
-                while (addresses.hasMoreElements()) {
-                    val address = addresses.nextElement()
-                    if (address is Inet4Address && !address.isLoopbackAddress) {
-                        Log.d(TAG, "Found IP address: ${address.hostAddress}")
-                        return address.hostAddress
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error getting IP address via NetworkInterface", e)
-        }
-
-        try {
-            val wifiManager =
-                context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            val wifiInfo = wifiManager.connectionInfo
-            val ipAddressStr = wifiInfo.ipAddress.let { ipInt ->
-                if (ipInt != 0) {
-                    String.format(
-                        "%d.%d.%d.%d",
-                        ipInt and 0xff,
-                        ipInt shr 8 and 0xff,
-                        ipInt shr 16 and 0xff,
-                        ipInt shr 24 and 0xff
-                    )
-                } else null
-            }
-            if (ipAddressStr != null) {
-                Log.d(TAG, "Found IP address via WifiManager: $ipAddressStr")
-                return ipAddressStr
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error getting IP address via WifiManager", e)
-        }
-
-        Log.w(TAG, "Could not determine device IP address")
-        return null
-    }
+    fun getDeviceIpAddress(): String? = NetworkUtils.getLocalIpAddress(context)
 }

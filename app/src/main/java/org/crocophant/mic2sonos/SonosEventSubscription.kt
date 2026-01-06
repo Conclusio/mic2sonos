@@ -1,14 +1,11 @@
 package org.crocophant.mic2sonos
 
-import android.annotation.SuppressLint
 import android.content.Context
-import android.net.wifi.WifiManager
 import android.util.Log
 import io.ktor.client.HttpClient
 import io.ktor.client.request.header
 import io.ktor.client.request.request
 import io.ktor.http.HttpStatusCode
-import io.ktor.server.application.call
 import io.ktor.server.cio.CIOApplicationEngine
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
@@ -135,14 +132,14 @@ class SonosEventSubscription(
                         } else {
                             Log.w(
                                 TAG,
-                                "Could not determine assigned port, using fallback ${EVENT_SERVER_PORT}"
+                                "Could not determine assigned port, using fallback $EVENT_SERVER_PORT"
                             )
                             assignedPort = EVENT_SERVER_PORT
                         }
                     } catch (e: Exception) {
                         Log.w(
                             TAG,
-                            "Error getting resolved connectors: ${e.message}, using fallback ${EVENT_SERVER_PORT}"
+                            "Error getting resolved connectors: ${e.message}, using fallback $EVENT_SERVER_PORT"
                         )
                         assignedPort = EVENT_SERVER_PORT
                     }
@@ -328,39 +325,5 @@ class SonosEventSubscription(
         stopEventServer()
     }
 
-    @SuppressLint("MissingPermission")
-    private fun getLocalIpAddress(): String? {
-        try {
-            val wifiManager = context.getSystemService(Context.WIFI_SERVICE) as WifiManager
-            val connectionInfo = wifiManager.connectionInfo
-            val ipAddressInt = connectionInfo.ipAddress
-
-            return if (ipAddressInt == 0) {
-                // WiFi not connected, try other interfaces
-                NetworkInterface.getNetworkInterfaces().asSequence()
-                    .flatMap { it.inetAddresses.asSequence() }
-                    .filterIsInstance<Inet4Address>()
-                    .filter { !it.isLoopbackAddress }
-                    .map { it.hostAddress }
-                    .firstOrNull()
-            } else {
-                // WiFi is connected
-                val bytes = byteArrayOf(
-                    (ipAddressInt and 0xff).toByte(),
-                    ((ipAddressInt shr 8) and 0xff).toByte(),
-                    ((ipAddressInt shr 16) and 0xff).toByte(),
-                    ((ipAddressInt shr 24) and 0xff).toByte()
-                )
-                "%d.%d.%d.%d".format(
-                    bytes[0].toInt() and 0xff,
-                    bytes[1].toInt() and 0xff,
-                    bytes[2].toInt() and 0xff,
-                    bytes[3].toInt() and 0xff
-                )
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to get local IP address", e)
-            return null
-        }
-    }
+    private fun getLocalIpAddress(): String? = NetworkUtils.getLocalIpAddress(context)
 }

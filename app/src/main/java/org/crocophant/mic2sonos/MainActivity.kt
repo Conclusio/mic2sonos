@@ -87,7 +87,6 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import org.crocophant.mic2sonos.ui.theme.Mic2SonosTheme
-import org.crocophant.mic2sonos.BuildConfig
 
 class MainActivity : ComponentActivity() {
 
@@ -224,7 +223,7 @@ class SonosViewModel(
     private lateinit var eventSubscription: SonosEventSubscription
     private val subscribedDevices = mutableSetOf<String>() // IP addresses
     private var useEventSubscriptions = false
-    private val POLLING_INTERVAL = 3000L // 3 seconds fallback
+    private val pollingInterval = 3000L // 3 seconds fallback
 
     fun onPermissionGranted() {
         permissionGranted = true
@@ -399,7 +398,7 @@ class SonosViewModel(
                 } catch (e: Exception) {
                     Log.e("SonosViewModel", "Error in polling loop", e)
                 }
-                kotlinx.coroutines.delay(POLLING_INTERVAL)
+                kotlinx.coroutines.delay(pollingInterval)
             }
         }
     }
