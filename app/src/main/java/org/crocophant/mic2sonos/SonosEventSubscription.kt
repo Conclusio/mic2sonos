@@ -46,6 +46,7 @@ class SonosEventSubscription(
     private var assignedPort: Int? = null
     private val subscriptions =
         mutableMapOf<String, SubscriptionInfo>() // device IP -> subscription info
+    private val deviceMap = mutableMapOf<String, SonosDevice>() // IP address -> full device info
     private val scope =
         CoroutineScope(Dispatchers.IO + Job() + CoroutineExceptionHandler { _, exception ->
             Log.e(
@@ -186,10 +187,11 @@ class SonosEventSubscription(
                 // Query the device for current track info
                 scope.launch {
                     try {
-                        val device = SonosDevice("Unknown", deviceIp, 1400)
+                        // Get the device from map, or create a placeholder with IP
+                        val device = deviceMap[deviceIp] ?: SonosDevice("Unknown", deviceIp, 1400)
                         val newInfo = sonosController.getNowPlaying(device)
 
-                        Log.d(TAG, "Updated track info for $deviceIp: ${newInfo.title}")
+                        Log.d(TAG, "Updated track info for ${device.name}: ${newInfo.title}")
                         onTrackChanged(device, newInfo)
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to get updated track info for $deviceIp", e)
@@ -237,6 +239,9 @@ class SonosEventSubscription(
                     return false
                 }
 
+                // Store device info for later event callbacks
+                deviceMap[device.ipAddress] = device
+                
                 subscriptions[device.ipAddress] = SubscriptionInfo(
                     sid = sid,
                     deviceIp = device.ipAddress,
@@ -317,6 +322,37 @@ class SonosEventSubscription(
             Log.d(TAG, "Event server stopped")
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping event server", e)
+        }
+    }
+
+    suspend fun unsubscribeAll() {
+        try {
+            Log.d(TAG, "Unsubscribing from ${subscriptions.size} devices")
+            subscriptions.forEach { (deviceIp, subInfo) ->
+                try {
+                    // Attempt to unsubscribe (send SUBSCRIBE with TIMEOUT: Second-0)
+                    val subscriptionUrl = "http://$deviceIp:1400/MediaRenderer/AVTransport/Event"
+                    val httpClient = HttpClient(ClientCIO) {
+                        engine {
+                            requestTimeout = 5000
+                        }
+                    }
+
+                    httpClient.request(subscriptionUrl) {
+                        method = io.ktor.http.HttpMethod.parse("SUBSCRIBE")
+                        header("SID", subInfo.sid)
+                        header("TIMEOUT", "Second-0")
+                    }
+                    httpClient.close()
+                    Log.d(TAG, "Unsubscribed from device $deviceIp")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed to unsubscribe from device $deviceIp", e)
+                }
+            }
+            subscriptions.clear()
+            deviceMap.clear()
+        } catch (e: Exception) {
+            Log.e(TAG, "Error unsubscribing from all devices", e)
         }
     }
 

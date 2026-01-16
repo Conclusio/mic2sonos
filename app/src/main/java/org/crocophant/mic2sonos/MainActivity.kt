@@ -79,6 +79,7 @@ import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -151,6 +152,7 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         sonosDiscovery.startDiscovery()
+        viewModel.refreshOnResume()
     }
 
     override fun onPause() {
@@ -224,6 +226,7 @@ class SonosViewModel(
     private val subscribedDevices = mutableSetOf<String>() // IP addresses
     private var useEventSubscriptions = false
     private val pollingInterval = 3000L // 3 seconds fallback
+    private var subscriptionCollectionJob: Job? = null
 
     fun onPermissionGranted() {
         permissionGranted = true
@@ -259,7 +262,8 @@ class SonosViewModel(
     }
 
     private fun startSubscribingToDevices() {
-        viewModelScope.launch {
+        subscriptionCollectionJob?.cancel()
+        subscriptionCollectionJob = viewModelScope.launch {
             // Subscribe to currently discovered devices
             _devicesWithNowPlaying.collect { devices ->
                 for (device in devices) {
@@ -296,6 +300,64 @@ class SonosViewModel(
 
     fun setPushToTalkMode(enabled: Boolean) {
         appSettings.setPushToTalkMode(enabled)
+    }
+
+    fun refreshOnResume() {
+        Log.d("SonosViewModel", "Refreshing on app resume")
+        
+        viewModelScope.launch {
+            try {
+                // Cancel old subscription collection to avoid duplicate subscriptions
+                subscriptionCollectionJob?.cancel()
+                Log.d("SonosViewModel", "Cancelled old subscription collection")
+                
+                // Unsubscribe from all devices and cleanup old subscriptions
+                if (::eventSubscription.isInitialized) {
+                    try {
+                        Log.d("SonosViewModel", "Unsubscribing from all devices")
+                        eventSubscription.unsubscribeAll()
+                        eventSubscription.cleanup()
+                        Log.d("SonosViewModel", "Cleaned up old event subscription server")
+                    } catch (e: Exception) {
+                        Log.w("SonosViewModel", "Error cleaning up old subscriptions", e)
+                    }
+                }
+                
+                // Clear old subscription tracking to avoid duplicates
+                subscribedDevices.clear()
+                Log.d("SonosViewModel", "Cleared subscription tracking")
+                
+                // Refresh track information for all devices
+                try {
+                    val currentDevices = _devicesWithNowPlaying.value
+                    Log.d("SonosViewModel", "Refreshing track info for ${currentDevices.size} devices")
+                    
+                    val updatedDevices = currentDevices.map { device ->
+                        try {
+                            val newInfo = sonosController.getNowPlaying(device)
+                            Log.d("SonosViewModel", "Refreshed track for ${device.name}: '${newInfo.title}'")
+                            device.copy(nowPlayingInfo = newInfo)
+                        } catch (e: Exception) {
+                            Log.e("SonosViewModel", "Failed to refresh track info for ${device.name}", e)
+                            device
+                        }
+                    }
+                    _devicesWithNowPlaying.value = updatedDevices
+                } catch (e: Exception) {
+                    Log.e("SonosViewModel", "Error refreshing track information", e)
+                }
+                
+                // Re-initialize event subscriptions for updated registrations
+                try {
+                    Log.d("SonosViewModel", "Re-initializing event subscriptions on resume")
+                    initializeEventSubscriptions()
+                } catch (e: Exception) {
+                    Log.e("SonosViewModel", "Error re-initializing event subscriptions", e)
+                }
+            } catch (e: Exception) {
+                Log.e("SonosViewModel", "Error in refreshOnResume", e)
+            }
+        }
     }
 
     init {
@@ -828,11 +890,21 @@ fun DeviceCard(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            if (device.nowPlayingInfo.title.isEmpty()) {
+            if (device.nowPlayingInfo.title.isEmpty() && device.nowPlayingInfo.artist.isEmpty()) {
+                // Nothing playing (completely empty)
                 Text(
-                    text = "Fetching track information...",
+                    text = "Nothing playing",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else if (device.nowPlayingInfo.title.isEmpty()) {
+                // Has some info but no title (might be a radio station or special content)
+                Text(
+                    text = device.nowPlayingInfo.artist,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
                 )
             } else {
                 Row(

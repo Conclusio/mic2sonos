@@ -81,13 +81,26 @@ class SonosNowPlaying {
                     responseBody
                 )
             if (metadataMatch == null) {
+                Log.v(TAG, "No TrackMetaData found in response for ${device.name}")
                 return NowPlayingInfo()
             }
 
             var metadataXml = metadataMatch.groupValues[1]
+            
+            // Check if metadata is empty (device is idle or between tracks)
+            if (metadataXml.isEmpty() || metadataXml.trim() == "NOT_IMPLEMENTED") {
+                Log.v(TAG, "Empty or unimplemented metadata for ${device.name}")
+                return NowPlayingInfo()
+            }
 
             // HTML decode the metadata - it comes XML-escaped in the SOAP response
             metadataXml = decodeHtmlEntities(metadataXml)
+
+            // Validate that we have actual XML content
+            if (!metadataXml.contains("<")) {
+                Log.v(TAG, "Metadata is not XML for ${device.name}: $metadataXml")
+                return NowPlayingInfo()
+            }
 
             // Parse the DIDL-Lite XML
             val docFactory = DocumentBuilderFactory.newInstance()
@@ -117,7 +130,7 @@ class SonosNowPlaying {
                 isPlaying = true
             )
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to parse metadata", e)
+            Log.e(TAG, "Failed to parse metadata for ${device.name}", e)
             return NowPlayingInfo()
         }
     }
