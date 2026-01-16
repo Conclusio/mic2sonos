@@ -47,6 +47,7 @@ class SonosEventSubscription(
     private val subscriptions =
         mutableMapOf<String, SubscriptionInfo>() // device IP -> subscription info
     private val deviceMap = mutableMapOf<String, SonosDevice>() // IP address -> full device info
+    private var cleanedUp = false
     private val scope =
         CoroutineScope(Dispatchers.IO + Job() + CoroutineExceptionHandler { _, exception ->
             Log.e(
@@ -66,6 +67,9 @@ class SonosEventSubscription(
 
     fun startEventServer(): Boolean {
         return try {
+            // Reset cleanup flag so we can start fresh
+            cleanedUp = false
+            
             // Ensure any old server is stopped first
             stopEventServer()
 
@@ -317,9 +321,20 @@ class SonosEventSubscription(
 
     fun stopEventServer() {
         try {
-            eventServer?.stop(gracePeriodMillis = 0, timeoutMillis = 1000)
+            eventServer?.let { server ->
+                try {
+                    server.stop(gracePeriodMillis = 500, timeoutMillis = 2000)
+                    Log.d(TAG, "Event server stopped")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error during graceful shutdown, forcing stop", e)
+                    try {
+                        server.stop(gracePeriodMillis = 0, timeoutMillis = 500)
+                    } catch (e2: Exception) {
+                        Log.w(TAG, "Error forcing server stop", e2)
+                    }
+                }
+            }
             eventServer = null
-            Log.d(TAG, "Event server stopped")
         } catch (e: Exception) {
             Log.e(TAG, "Error stopping event server", e)
         }
@@ -357,8 +372,30 @@ class SonosEventSubscription(
     }
 
     fun cleanup() {
-        scope.cancel()
-        stopEventServer()
+        if (cleanedUp) {
+            Log.d(TAG, "Already cleaned up, skipping duplicate cleanup")
+            return
+        }
+        cleanedUp = true
+        
+        try {
+            Log.d(TAG, "Starting cleanup")
+            // Stop server first (graceful shutdown)
+            stopEventServer()
+            
+            // Give server a moment to finish shutdown
+            try {
+                Thread.sleep(100)
+            } catch (e: InterruptedException) {
+                Log.v(TAG, "Interrupted during cleanup delay")
+            }
+            
+            // Cancel scope last (after server is shut down)
+            scope.cancel()
+            Log.d(TAG, "Cleanup complete")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error during cleanup", e)
+        }
     }
 
     private fun getLocalIpAddress(): String? = NetworkUtils.getLocalIpAddress(context)
